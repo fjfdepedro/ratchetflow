@@ -215,6 +215,28 @@ class Store:
         return bool(self.q(f"SELECT 1 FROM runs r WHERE r.id = :id AND {_RUNNABLE}",
                            {"id": run_id, "now": now}))
 
+    def inbox(self, budget_event: str) -> list[dict]:
+        """Runs waiting for a person: a `NeedsHuman` question or a budget top-up, oldest first.
+
+        Runs waiting for an external event (`wait_for_event`, e.g. CI) are not listed.
+        """
+        items = []
+        for run in reversed(self.list_runs("waiting", limit=100_000)):
+            waiting = [s for s in self.list_steps(run.id) if s.status == "waiting"]
+            step = waiting[-1] if waiting else None
+            if run.wait_event == budget_event:
+                question, details = run.error or "budget used up", {
+                    "spent_usd": round(self.run_cost(run.id), 4), "budget_usd": run.budget_usd}
+            elif step is not None and step.scratch.get("waiting_event") == run.wait_event:
+                question = step.scratch.get("question") or run.error or ""
+                details = step.scratch.get("details")
+            else:
+                continue
+            items.append({"run_id": run.id, "workflow": run.workflow, "event": run.wait_event,
+                          "step": step.name if step else None, "question": question,
+                          "details": details, "since": run.updated_at})
+        return items
+
     # --- steps ------------------------------------------------------------
 
     def get_step(self, run_id: str, seq: int) -> Optional[StepRow]:

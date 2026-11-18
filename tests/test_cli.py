@@ -1,5 +1,6 @@
-"""The real CLI: the app's database and stopping with SIGTERM."""
+"""The real CLI: the app's database, the inbox and stopping with SIGTERM."""
 
+import json
 import os
 import signal
 import stat
@@ -67,3 +68,41 @@ def test_sigterm_kills_the_agent_and_releases_the_lease(tmp_path):
         os.kill(child, 0)                                  # the grandchild died with its parent
     run = Store(tmp_path / "flows.db").get_run("r")
     assert run.owner is None and run.lease_until is None   # can be resumed right away
+
+
+def test_inbox_shows_the_whole_question_its_details_and_how_to_answer(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    app = write_app(tmp_path, """
+        from ratchetflow import NeedsHuman
+
+        @engine.workflow("w")
+        def w(ctx):
+            def approval():
+                if ctx.scratch.get("signal") is None:
+                    raise NeedsHuman("outline.ok", "Approve the outline? " + "Long context. " * 40,
+                                     details={"title": "Durable execution"})
+                return "ok"
+            return ctx.step("approval", approval)
+    """)
+    main(["--app", app, "start", "w", "--id", "r"])
+    capsys.readouterr()
+    main(["--app", app, "inbox"])
+    out = capsys.readouterr().out
+    assert out.count("Long context.") == 40
+    assert "Durable execution" in out
+    assert "ratchet signal r outline.ok" in out
+    main(["--app", app, "show", "r"])
+    assert capsys.readouterr().out.count("Long context.") >= 40   # show no longer cuts it
+
+
+def test_inbox_as_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    app = write_app(tmp_path, """
+        @engine.workflow("w")
+        def w(ctx):
+            return ctx.step("x", lambda: 1)
+    """)
+    main(["--app", app, "start", "w", "--id", "r"])
+    capsys.readouterr()
+    main(["--app", app, "inbox", "--json"])
+    assert json.loads(capsys.readouterr().out) == []

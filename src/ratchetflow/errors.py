@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 
 class Retryable(Exception):
@@ -24,13 +25,15 @@ class Pause(Exception):
 class NeedsHuman(Exception):
     """Only a person can unblock the run (budget used up, a decision to approve...).
 
-    The run waits for `event`, sent with `ratchet signal <run> <event>`.
+    The run waits for `event`, sent with `ratchet signal <run> <event>`. `reason` is the question
+    and `details` (JSON) whatever the person needs to answer it; `ratchet inbox` shows both whole.
     """
 
-    def __init__(self, event: str, reason: str = ""):
+    def __init__(self, event: str, reason: str = "", details: Any = None):
         super().__init__(reason or f"waiting for event {event!r}")
         self.event = event
         self.reason = reason
+        self.details = details
 
 
 class Fatal(Exception):

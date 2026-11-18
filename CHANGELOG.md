@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ratchet inbox` (and `--json`): runs waiting for a person, with the whole question, its
+  details and the exact `ratchet signal` to answer. Budget top-ups are listed too.
+- `NeedsHuman(event, reason, details=...)`: JSON context shown in the inbox.
+- `ctx.budget_left()`.
+- `claude(..., expect_json=False)`: `validate` receives the answer's text, to check the files an
+  agent wrote.
+- `claude(..., max_budget_usd=...)`: caps the session; by default, what is left of the run's budget.
+
+### Fixed
+
+- A Claude session that ran out of `--max-budget-usd` was retried, spending again. The run now
+  waits for `ratchet.budget` and resumes the same session.
+- `ratchet show` cut a waiting run's question to its first line.
+
 ## [0.1.0] - 2026-11-18
 
 First release. Install `ratchetflow`, import `ratchetflow`; the CLI is `ratchet`.

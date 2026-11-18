@@ -1,4 +1,4 @@
-"""CLI: `ratchet runs | show | signal | retry | tick | start`.
+"""CLI: `ratchet runs | show | inbox | signal | retry | tick | start`.
 
 `tick` and `start` need the workflows: `--app module:engine` or `--app file.py:engine` (or the
 RATCHET_APP variable). The other commands only read or write the database: the one of `--app`
@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .engine import Engine
+from .engine import BUDGET_EVENT, Engine
 from .store import Store
 
 
@@ -68,6 +68,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     s = sub.add_parser("show", help="one run and its steps")
     s.add_argument("run_id")
     s.add_argument("--output", action="store_true", help="include each step's output")
+
+    i = sub.add_parser("inbox", help="runs waiting for a person, with what to answer")
+    i.add_argument("--json", action="store_true", help="machine-readable output")
 
     g = sub.add_parser("signal", help="send an event to a waiting run")
     g.add_argument("run_id")
@@ -129,13 +132,35 @@ def main(argv: Optional[list[str]] = None) -> int:
         budget = f" / {run.budget_usd:.2f}" if run.budget_usd is not None else ""
         print(f"{run.id}  {run.workflow}  {run.status}  cost {store.run_cost(run.id):.2f}{budget} USD")
         if run.error:
-            print(f"  reason: {run.error.splitlines()[0]}")
+            # A waiting run's reason is a question for someone: show it whole. A failure's is a
+            # traceback: its first line says enough.
+            reason = run.error if run.status == "waiting" else run.error.splitlines()[0]
+            print("  reason: " + reason.replace("\n", "\n          "))
         for step in store.list_steps(run.id):
             dur = f"{step.finished_at - step.started_at:.0f}s" if step.finished_at else "..."
             print(f"  {step.seq:>3} {step.name:<28} {step.status:<8} x{step.attempts}"
                   f" {step.cost_usd:>6.2f}$ {dur:>7}  {step.error or ''}")
             if a.output and step.output is not None:
                 print("      " + json.dumps(step.output, ensure_ascii=False)[:300])
+        return 0
+    if a.cmd == "inbox":
+        items = store.inbox(BUDGET_EVENT)
+        if a.json:
+            print(json.dumps(items, ensure_ascii=False, indent=2))
+            return 0
+        if not items:
+            print("nobody is waiting for you")
+        for item in items:
+            print(f"{item['run_id']}  {item['workflow']}  waiting since {_fmt_t(item['since'])}"
+                  f"  step: {item['step'] or '-'}")
+            for line in item["question"].splitlines() or [""]:
+                print(f"  {line}")
+            if item["details"] is not None:
+                print("  details:")
+                for line in json.dumps(item["details"], ensure_ascii=False, indent=2).splitlines():
+                    print(f"    {line}")
+            payload = '{"add_usd": <USD>}' if item["event"] == BUDGET_EVENT else "<json>"
+            print(f"  answer: ratchet signal {item['run_id']} {item['event']} '{payload}'\n")
         return 0
     if a.cmd == "signal":
         if not store.get_run(a.run_id):
