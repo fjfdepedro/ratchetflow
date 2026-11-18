@@ -1,0 +1,46 @@
+[project]
+name = "ratchetflow"
+version = "0.1.0"
+description = "Durable steps for long-running agent workflows: a crash costs one step, not the run."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Paco Fernández" }]
+keywords = ["durable execution", "workflow", "agents", "llm", "claude", "sqlite", "orchestration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/fjfdepedro/ratchetflow"
+Repository = "https://github.com/fjfdepedro/ratchetflow"
+Issues = "https://github.com/fjfdepedro/ratchetflow/issues"
+Changelog = "https://github.com/fjfdepedro/ratchetflow/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ratchet = "ratchet.cli:entry"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ratchet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

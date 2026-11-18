@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Demo runs end to end
+        working-directory: examples
+        run: |
+          uv run ratchet --app demo.py:engine start demo '"Durable execution"' --id a1
+          uv run ratchet --app demo.py:engine signal a1 outline.ok '{"decision": "go on"}'
+          uv run ratchet --app demo.py:engine tick
+          uv run ratchet --app demo.py:engine show a1 | grep -q completed
+
+  build:
+    name: Build the package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - name: The wheel installs and imports with no dependencies
+        run: |
+          uv venv /tmp/check
+          uv pip install --python /tmp/check dist/*.whl
+          /tmp/check/bin/python -c "import ratchet, ratchet.agents; print(ratchet.__version__)"
+          /tmp/check/bin/ratchet --help > /dev/null

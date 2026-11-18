@@ -1,0 +1,277 @@
+"""A step that is a headless Claude Code session (`claude -p`).
+
+What it adds over spawning the subprocess yourself:
+
+- Stores the `session_id` in the step's scratch **as soon as the CLI announces it**. If the
+  process dies halfway, the retry runs `--resume <session_id>` instead of starting over.
+- Quota used up (429 "session limit ... resets 1:30pm") -> `Pause` until the reset time.
+- Overload / 5xx -> `Retryable`.
+- Timeout -> kills the whole process group (the CLI spawns children: MCP, subagents, shells).
+- Step cost -> `ctx.record_cost`, which counts towards the run's budget. An attempt that is
+  cut off (timeout, kill, crash) never gets the CLI's own figure, so its cost is estimated
+  from the token usage streamed so far (see `PRICES`).
+- Structured output: extracts the JSON from the answer and passes it through `validate`.
+
+Usage:
+
+    out = ctx.step("outline", claude, ctx, "Outline the article and return it as JSON",
+                   cwd=folder, validate=check_outline, timeout_s=900)
+"""
+
+from __future__ import annotations
+
+import collections
+import json
+import os
+import queue
+import re
+import signal
+import subprocess
+import threading
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Callable, Optional, Sequence
+
+from ..errors import Fatal, Pause, Retryable
+
+DEFAULT_RESUME_PROMPT = (
+    "The previous session was cut off or its output was not valid. Before going on, check the "
+    "actual state (files, git) and do not redo what is already done. Previous error: {error}. "
+    "Finish with the output the original prompt asked for."
+)
+
+# USD per million tokens: (input, output, cache read), from Anthropic's price list (Nov 2026).
+# Cache writes cost 1.25x input (5-minute TTL) or 2x input (1-hour TTL). Only used to estimate
+# attempts that were cut off; pass `prices=` to `claude()` to override.
+PRICES: dict[str, tuple[float, float, float]] = {
+    "claude-fable-5-2": (8.0, 40.0, 0.20),
+    "claude-mythos-5-2": (8.0, 40.0, 0.20),
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.00),
+    "claude-mythos-5": (10.0, 50.0, 1.00),
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-opus-4": (5.0, 25.0, 0.50),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.10),
+    "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-4": (3.0, 15.0, 0.30),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01),
+    "claude-haiku-4": (1.0, 5.0, 0.10),
+}
+
+_QUOTA = re.compile(r"(session|usage|rate) limit|hit your .*limit", re.I)
+_RESET = re.compile(r"resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
+_OVERLOAD = re.compile(r"overloaded|529|50[0-4]|internal server error|ECONNRESET|ETIMEDOUT", re.I)
+
+
+def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
+           model: Optional[str] = None, max_turns: Optional[int] = None,
+           timeout_s: float = 1800, validate: Optional[Callable[[Any], Any]] = None,
+           extra_args: Sequence[str] = (), bin: str = "claude",
+           resume_prompt: str = DEFAULT_RESUME_PROMPT,
+           env: Optional[dict] = None, now: Callable[[], datetime] = datetime.now,
+           prices: Optional[dict[str, tuple[float, float, float]]] = None) -> dict:
+    scratch = ctx.scratch
+    # A previous attempt died with the whole process: bill what it had spent before going on.
+    _bill_unbilled(ctx, scratch.get("unbilled_usd"))
+    session_id = scratch.get("session_id")
+    cmd = [bin, "-p", "--output-format", "stream-json", "--verbose", *extra_args]
+    if model:
+        cmd += ["--model", model]
+    if max_turns:
+        cmd += ["--max-turns", str(max_turns)]
+    if session_id:
+        cmd += ["--resume", session_id]
+        stdin_text = resume_prompt.format(error=scratch.get("last_error") or "none")
+    else:
+        stdin_text = prompt
+
+    try:
+        result = _run_stream(cmd, stdin_text, cwd, env, timeout_s,
+                             on_session=lambda sid: ctx.save_scratch(session_id=sid),
+                             on_usage=lambda usd: ctx.save_scratch(unbilled_usd=usd),
+                             prices=prices or PRICES)
+    except BaseException:
+        # Cut off before the CLI reported its cost: bill the estimate now.
+        try:
+            _bill_unbilled(ctx, ctx.scratch.get("unbilled_usd"))
+        except BaseException:  # noqa: BLE001 — never hide the original error
+            pass
+        raise
+
+    # Bill first, then clear: if we die in between, the estimate is billed twice (too much is
+    # safer than too little for a budget).
+    if result.get("total_cost_usd"):
+        ctx.record_cost(float(result["total_cost_usd"]))
+    ctx.save_scratch(unbilled_usd=0)
+    text = result.get("result") or ""
+    if result.get("is_error"):
+        _raise_for_error(ctx, text, result, now)
+
+    try:
+        data = _extract_json(text) if validate else None
+        if validate:
+            data = validate(data)
+            json.dumps(data)  # whatever validates must be storable
+    except Exception as e:  # noqa: BLE001
+        ctx.save_scratch(last_error=f"invalid output: {e}"[:400])
+        raise Retryable(f"invalid output: {e}") from e
+
+    return {"text": text, "data": data, "session_id": result.get("session_id"),
+            "cost_usd": result.get("total_cost_usd"), "turns": result.get("num_turns")}
+
+
+def _raise_for_error(ctx: Any, text: str, result: dict, now: Callable[[], datetime]) -> None:
+    ctx.save_scratch(last_error=text[:400])
+    if _QUOTA.search(text) or result.get("api_error_status") == 429:
+        raise Pause(_reset_time(text, now()), reason=f"quota used up: {text[:120]}")
+    if _OVERLOAD.search(text):
+        raise Retryable(text[:200])
+    if result.get("subtype") == "error_max_turns":
+        raise Fatal("the session ran out of --max-turns")
+    raise Retryable(text[:200] or "error without text")
+
+
+def _reset_time(text: str, now: datetime, margin: timedelta = timedelta(minutes=2),
+                fallback: timedelta = timedelta(minutes=15)) -> datetime:
+    """The announced time is approximate, so a margin is added. With no time, poll every 15 min."""
+    m = _RESET.search(text)
+    if not m:
+        return now + fallback
+    hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+    at = now.replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
+    if at <= now:
+        at += timedelta(days=1)
+    return at + margin
+
+
+def _bill_unbilled(ctx: Any, usd: Optional[float]) -> None:
+    if usd:
+        ctx.record_cost(float(usd))
+        ctx.save_scratch(unbilled_usd=0)
+
+
+def _price(model: str, prices: dict[str, tuple[float, float, float]]) -> tuple[float, float, float]:
+    """Longest matching prefix; an unknown model gets the highest price of each kind."""
+    match = max((k for k in prices if model.startswith(k)), key=len, default=None)
+    if match:
+        return prices[match]
+    return tuple(max(p[i] for p in prices.values()) for i in range(3))  # type: ignore[return-value]
+
+
+def estimate_cost(usage: dict, model: str,
+                  prices: Optional[dict[str, tuple[float, float, float]]] = None) -> float:
+    """USD for one API message's `usage`, as Anthropic bills it."""
+    inp, out, read = _price(model, prices or PRICES)
+    written = usage.get("cache_creation_input_tokens") or 0
+    detail = usage.get("cache_creation") or {}
+    written_1h = detail.get("ephemeral_1h_input_tokens") or 0
+    written_5m = detail.get("ephemeral_5m_input_tokens", written - written_1h) or 0
+    return (
+        (usage.get("input_tokens") or 0) * inp
+        + (usage.get("output_tokens") or 0) * out
+        + (usage.get("cache_read_input_tokens") or 0) * read
+        + written_5m * inp * 1.25
+        + written_1h * inp * 2
+    ) / 1_000_000
+
+
+def _extract_json(text: str) -> Any:
+    """The last ```json``` block of the answer or, if there is none, the whole answer."""
+    blocks = re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.S)
+    return json.loads(blocks[-1] if blocks else text)
+
+
+def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
+                env: Optional[dict], timeout_s: float,
+                on_session: Callable[[str], None],
+                on_usage: Callable[[float], None] = lambda _usd: None,
+                prices: Optional[dict[str, tuple[float, float, float]]] = None) -> dict:
+    proc = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+                            start_new_session=True)
+    assert proc.stdin and proc.stdout and proc.stderr
+    lines: "queue.Queue[Optional[str]]" = queue.Queue()
+    stderr_tail: collections.deque[str] = collections.deque(maxlen=50)
+
+    def read_stdout() -> None:
+        assert proc.stdout
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    def read_stderr() -> None:
+        # Always drained: a full stderr pipe would block the CLI until the timeout.
+        assert proc.stderr
+        for line in proc.stderr:
+            stderr_tail.append(line)
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+    err_reader = threading.Thread(target=read_stderr, daemon=True)
+    err_reader.start()
+    deadline = time.monotonic() + timeout_s
+    result: dict = {}
+    announced = False
+    # Usage per API message. The stream repeats a message once per content block, and its
+    # output_tokens is the count when the message started, so the estimate is a lower bound.
+    usage_by_msg: dict[str, float] = {}
+    try:
+        proc.stdin.write(stdin_text)
+        proc.stdin.close()
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"the agent went over {timeout_s:.0f}s")
+            try:
+                line = lines.get(timeout=min(left, 5))
+            except queue.Empty:
+                continue
+            if line is None:
+                break
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sid = ev.get("session_id")
+            if sid and not announced:
+                on_session(sid)  # to disk now: if we die next, the retry resumes it
+                announced = True
+            msg = ev.get("message") if ev.get("type") == "assistant" else None
+            if isinstance(msg, dict) and msg.get("id") and msg.get("usage"):
+                usd = estimate_cost(msg["usage"], msg.get("model") or "", prices)
+                if usage_by_msg.get(msg["id"]) != usd:
+                    usage_by_msg[msg["id"]] = usd
+                    on_usage(sum(usage_by_msg.values()))  # to disk: billable even if we die
+            if ev.get("type") == "result":
+                result = ev
+        proc.wait(timeout=30)
+    except BaseException:
+        _kill_group(proc)
+        raise
+    if not result:
+        err_reader.join(timeout=1)
+        err = "".join(stderr_tail)[-400:]
+        raise Retryable(f"the CLI exited (code {proc.returncode}) without a result event: {err}")
+    return result
+
+
+def _kill_group(proc: subprocess.Popen, grace_s: float = 10) -> None:
+    """SIGTERM to the whole group and SIGKILL if it does not go: no zombie agents."""
+    pgid = proc.pid  # start_new_session: the CLI leads its own group, even after it exits
+    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
