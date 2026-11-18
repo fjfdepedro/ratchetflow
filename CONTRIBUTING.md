@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking a look. ratchet is small on purpose; these rules keep it that way.
+Thanks for taking a look. ratchetflow is small on purpose; these rules keep it that way.
 
 ## Setup
 
@@ -11,7 +11,7 @@ uv run pytest -q
 
 ## Ground rules
 
-- **No dependencies in the core** (`src/ratchet/`). An adapter that needs a library goes in an
+- **No dependencies in the core** (`src/ratchetflow/`). An adapter that needs a library goes in an
   optional extra.
 - **Tests spend no tokens.** The Claude adapter is tested against a fake CLI
   (`tests/test_claude_agent.py`). Anything that depends on time goes through the `Clock` in
@@ -25,11 +25,11 @@ uv run pytest -q
 
 | File | What |
 |---|---|
-| `src/ratchet/engine.py` | `Engine` (registration, start/run/tick/signal/retry, lease with heartbeat) and `Context` (step, sleep, wait_for_event, budget, scratch) |
-| `src/ratchet/store.py` | SQLite schema (runs, steps, events) and every query; step writes are fenced by the lease owner |
-| `src/ratchet/errors.py` | `Retryable`, `Fatal`, `Pause`, `NeedsHuman` and the engine's errors |
-| `src/ratchet/agents/claude.py` | Step that runs `claude -p` with session resume, quota, timeout, validation and cost estimates |
-| `src/ratchet/cli.py` | `ratchet runs/show/signal/retry/tick/start` |
+| `src/ratchetflow/engine.py` | `Engine` (registration, start/run/tick/signal/retry, lease with heartbeat) and `Context` (step, sleep, wait_for_event, budget, scratch) |
+| `src/ratchetflow/store.py` | SQLite schema (runs, steps, events) and every query; step writes are fenced by the lease owner |
+| `src/ratchetflow/errors.py` | `Retryable`, `Fatal`, `Pause`, `NeedsHuman` and the engine's errors |
+| `src/ratchetflow/agents/claude.py` | Step that runs `claude -p` with session resume, quota, timeout, validation and cost estimates |
+| `src/ratchetflow/cli.py` | `ratchet runs/show/signal/retry/tick/start` |
 | `examples/demo.py` | Token-free flow with a question for a human |
 
 ## Ideas on the table

@@ -16,14 +16,14 @@ Requires Python 3.11+ on Linux or macOS (the agent adapter relies on POSIX proce
 
 ```bash
 # not on PyPI yet; from a clone:
-uv pip install -e .        # the package is `ratchetflow`, imported as `ratchet`
+uv pip install -e .        # import ratchetflow; the CLI is called `ratchet`
 ```
 
 ## In 30 lines
 
 ```python
-from ratchet import Engine, Fatal, NeedsHuman
-from ratchet.agents import claude
+from ratchetflow import Engine, Fatal, NeedsHuman
+from ratchetflow.agents import claude
 
 engine = Engine("~/.local/state/ratchet/runs.db")
 
@@ -96,7 +96,7 @@ Starting a run again with the same `--id` neither duplicates it nor wakes it bef
 
 ## The Claude Code adapter
 
-`ratchet.agents.claude` runs `claude -p --output-format stream-json` as a step:
+`ratchetflow.agents.claude` runs `claude -p --output-format stream-json` as a step:
 
 - stores the `session_id` as soon as the CLI announces it; if the process dies, the retry runs
   `--resume` instead of starting over;
@@ -107,10 +107,10 @@ Starting a run again with the same `--id` neither duplicates it nor wakes it bef
   validate, it retries in the same session asking for a fix;
 - adds `total_cost_usd` to the step's cost. An attempt cut off before the CLI reports its cost
   (timeout, kill, crash) is billed from the token usage streamed so far, at the prices in
-  `ratchet.agents.claude.PRICES` (override with `prices=`). It is a lower bound: the stream
+  `ratchetflow.agents.claude.PRICES` (override with `prices=`). It is a lower bound: the stream
   under-reports output tokens.
 
-## What ratchet does not do for you
+## What ratchetflow does not do for you
 
 - **Idempotent external effects.** If the process dies after publishing and before storing the
   step, the step runs again. A step that touches the outside world checks first whether it

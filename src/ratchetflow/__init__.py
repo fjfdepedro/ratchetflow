@@ -1,4 +1,4 @@
-"""ratchet: durable steps for long-running agent workflows.
+"""ratchetflow: durable steps for long-running agent workflows.
 
 If the process dies, you lose the step in flight, nothing more.
 """

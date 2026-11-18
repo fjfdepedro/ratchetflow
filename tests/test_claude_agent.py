@@ -10,8 +10,8 @@ from datetime import datetime
 
 import pytest
 
-from ratchet.agents import claude
-from ratchet.agents.claude import _reset_time, estimate_cost
+from ratchetflow.agents import claude
+from ratchetflow.agents.claude import _reset_time, estimate_cost
 
 FAKE = textwrap.dedent(f"""\
     #!{sys.executable}

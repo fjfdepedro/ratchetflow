@@ -30,7 +30,7 @@ Issues = "https://github.com/fjfdepedro/ratchetflow/issues"
 Changelog = "https://github.com/fjfdepedro/ratchetflow/blob/main/CHANGELOG.md"
 
 [project.scripts]
-ratchet = "ratchet.cli:entry"
+ratchet = "ratchetflow.cli:entry"
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -40,7 +40,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ratchet"]
+packages = ["src/ratchetflow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

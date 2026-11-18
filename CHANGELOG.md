@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-18
+
+First release. Install `ratchetflow`, import `ratchetflow`; the CLI is `ratchet`.
+
 ### Added
 
 - Durable workflow engine on SQLite: `ctx.step`, `ctx.sleep`, `ctx.wait_for_event`, per-run
@@ -20,3 +24,6 @@ All notable changes to this project are documented here. The format follows
   attempts that are cut off.
 - `ratchet` CLI: `start`, `tick`, `runs`, `show`, `signal`, `retry`.
 - CI on GitHub Actions for Python 3.11–3.13.
+
+[Unreleased]: https://github.com/fjfdepedro/ratchetflow/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/fjfdepedro/ratchetflow/releases/tag/v0.1.0

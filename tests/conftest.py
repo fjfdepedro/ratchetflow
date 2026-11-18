@@ -1,6 +1,6 @@
 import pytest
 
-from ratchet import Engine
+from ratchetflow import Engine
 
 
 class Clock:

@@ -8,7 +8,7 @@
 
 import os
 
-from ratchet import Engine, NeedsHuman
+from ratchetflow import Engine, NeedsHuman
 
 engine = Engine(os.environ.get("RATCHET_DB", "demo.db"))
 

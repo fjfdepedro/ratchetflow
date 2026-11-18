@@ -4,9 +4,9 @@ from datetime import datetime
 
 import pytest
 
-from ratchet import Fatal, NeedsHuman, NonDeterminismError, Pause, Retryable, StepFailed
-from ratchet.engine import BUDGET_EVENT
-from ratchet.store import Store
+from ratchetflow import Fatal, NeedsHuman, NonDeterminismError, Pause, Retryable, StepFailed
+from ratchetflow.engine import BUDGET_EVENT
+from ratchetflow.store import Store
 
 from .conftest import Crash
 

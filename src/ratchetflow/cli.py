@@ -38,7 +38,7 @@ def _load_engine(spec: str) -> Engine:
         mod = importlib.import_module(target)
     engine = getattr(mod, attr)
     if not isinstance(engine, Engine):
-        raise SystemExit(f"{spec} is not a ratchet.Engine")
+        raise SystemExit(f"{spec} is not a ratchetflow.Engine")
     return engine
 
 

@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-from ratchet.cli import main
-from ratchet.store import Store
+from ratchetflow.cli import main
+from ratchetflow.store import Store
 
 from .test_claude_agent import FAKE
 
@@ -19,8 +19,8 @@ from .test_claude_agent import FAKE
 def write_app(tmp_path, body: str) -> str:
     app = tmp_path / "flows.py"
     app.write_text(textwrap.dedent(f"""\
-        from ratchet import Engine
-        from ratchet.agents import claude
+        from ratchetflow import Engine
+        from ratchetflow.agents import claude
         engine = Engine({str(tmp_path / "flows.db")!r}, log=lambda m: None)
     """) + textwrap.dedent(body))
     return f"{app}:engine"
@@ -52,7 +52,7 @@ def test_sigterm_kills_the_agent_and_releases_the_lease(tmp_path):
             return ctx.step("a", claude, ctx, "hi", bin={str(bin_)!r}, timeout_s=600)
     """)
     env = {**os.environ, "FAKE_LOG": str(log), "FAKE_MODES": "hang"}
-    proc = subprocess.Popen([sys.executable, "-m", "ratchet.cli", "--app", app,
+    proc = subprocess.Popen([sys.executable, "-m", "ratchetflow.cli", "--app", app,
                              "start", "w", "--id", "r"], env=env, cwd=tmp_path)
     child_file = tmp_path / "calls.jsonl.child"
     end = time.monotonic() + 20
