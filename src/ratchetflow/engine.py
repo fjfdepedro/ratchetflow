@@ -1,7 +1,8 @@
 """Durable execution engine.
 
 A workflow is a plain Python function that receives a `Context`. Anything with side effects or
-that is not deterministic (LLM calls, git, an API, the clock) goes inside `ctx.step(...)`.
+that is not deterministic (LLM calls, git, an API) goes inside `ctx.step(...)`; the clock and
+random numbers, through `ctx.now(name)` and `ctx.random(name)`.
 Every finished step is stored; if the process dies, the workflow runs again from the top and the
 finished steps return their stored output without running again.
 """
@@ -12,6 +13,7 @@ import hashlib
 import inspect
 import json
 import os
+import random as _random
 import socket
 import sqlite3
 import threading
@@ -19,6 +21,7 @@ import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -161,6 +164,27 @@ class Context:
             return
         self._write(seq, status="waiting")
         raise _SuspendWith(_Suspension(wake_at=wake_at, reason=f"sleep {name}"))
+
+    def now(self, name: str) -> datetime:
+        """The time, read once per run: a replay gets the same value, even the next day.
+
+        Use it instead of `datetime.now()` or `date.today()` in the workflow body, where a value
+        that changes between replays (a date in a file name, say) breaks the run.
+        """
+        return datetime.fromtimestamp(self._remember(name, self._engine.now))
+
+    def random(self, name: str) -> float:
+        """A random float in [0, 1), drawn once per run and the same on every replay."""
+        return self._remember(name, _random.random)
+
+    def _remember(self, name: str, read: Callable[[], Any]) -> Any:
+        seq, row = self._enter(name)
+        if row is not None and row.status == "done":
+            return row.output
+        self._start(seq, name)
+        value = read()
+        self._write(seq, status="done", output=value, finished_at=self._engine.now())
+        return value
 
     def wait_for_event(self, name: str, event: str, timeout_s: Optional[float] = None) -> Any:
         """Waits for `ratchet signal <run> <event>`. Returns the payload, or None on timeout."""

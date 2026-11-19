@@ -90,6 +90,8 @@ worker down fails after `retries` attempts instead of looping forever. A step th
 was caught by the workflow raises `StepFailed` again on replay; it does not run again.
 
 Also: `ctx.sleep(name, s)`, `ctx.wait_for_event(name, event, timeout_s)`,
+`ctx.now(name)` and `ctx.random(name)` (read once and stored, so a replay the next day gets the
+same date: use them instead of `datetime.now()`, `date.today()` or `random` in the workflow body),
 `ctx.record_cost(usd)` (counts towards the run's `--budget`: once over it, the run waits for
 `ratchet.budget`) and `ctx.save_scratch(...)` for a step's intermediate state.
 
