@@ -50,6 +50,25 @@ def _stop_on_sigterm() -> None:
         signal.signal(sig, handler)
 
 
+def _span(seconds: float) -> str:
+    if seconds < 120:
+        return f"{seconds:.0f}s"
+    if seconds < 7200:
+        return f"{seconds / 60:.0f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def _duration(step) -> str:
+    """Working time, plus how long the step waited (for a person, a pause or a retry)."""
+    if not step.finished_at:
+        return "..."
+    wall = step.finished_at - step.started_at
+    if step.busy_s is None:   # written before busy time was recorded
+        return _span(wall)
+    waited = wall - step.busy_s
+    return _span(step.busy_s) + (f" (+{_span(waited)} waiting)" if waited >= 1 else "")
+
+
 def _fmt_t(ts: Optional[float]) -> str:
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S") if ts else "-"
 
@@ -137,7 +156,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             reason = run.error if run.status == "waiting" else run.error.splitlines()[0]
             print("  reason: " + reason.replace("\n", "\n          "))
         for step in store.list_steps(run.id):
-            dur = f"{step.finished_at - step.started_at:.0f}s" if step.finished_at else "..."
+            dur = _duration(step)
             print(f"  {step.seq:>3} {step.name:<28} {step.status:<8} x{step.attempts}"
                   f" {step.cost_usd:>6.2f}$ {dur:>7}  {step.error or ''}")
             if a.output and step.output is not None:

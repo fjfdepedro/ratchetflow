@@ -15,12 +15,16 @@ All notable changes to this project are documented here. The format follows
 - `claude(..., expect_json=False)`: `validate` receives the answer's text, to check the files an
   agent wrote.
 - `claude(..., max_budget_usd=...)`: caps the session; by default, what is left of the run's budget.
+- Steps record their working time (`busy_s`), apart from the time they spent waiting for a
+  person, a pause or a retry. `ratchet show` prints both: `0s (+37m waiting)`. Databases from
+  0.1.0 gain the column on open; their old steps show wall time as before.
 
 ### Fixed
 
 - A Claude session that ran out of `--max-budget-usd` was retried, spending again. The run now
   waits for `ratchet.budget` and resumes the same session.
 - `ratchet show` cut a waiting run's question to its first line.
+- `ratchet show` reported the time a step waited for a person as the step's duration.
 
 ## [0.1.0] - 2026-11-18
 

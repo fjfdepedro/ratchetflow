@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS steps (
     cost_usd     REAL NOT NULL DEFAULT 0,
     started_at   REAL NOT NULL,
     finished_at  REAL,
+    busy_s       REAL,                   -- time spent running the step, waits left out
     PRIMARY KEY (run_id, seq),
     UNIQUE (run_id, name)
 );
@@ -102,6 +103,7 @@ class StepRow:
     cost_usd: float
     started_at: float
     finished_at: Optional[float]
+    busy_s: Optional[float] = None   # None: written before 0.2.0
 
 
 def _loads(s: Optional[str]) -> Any:
@@ -119,6 +121,16 @@ class Store:
         self._db.execute("PRAGMA busy_timeout=5000")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Columns added after 0.1.0. Old rows keep NULL: their working time is unknown."""
+        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(steps)")}
+        if "busy_s" not in cols:
+            try:
+                self._db.execute("ALTER TABLE steps ADD COLUMN busy_s REAL")
+            except sqlite3.OperationalError:   # another process added it first
+                pass
 
     def close(self) -> None:
         self._db.close()
@@ -254,8 +266,8 @@ class Store:
             if owner is not None and not db.execute(
                     f"SELECT {_OWNS}", {"run_id": run_id, "owner": owner}).fetchone()[0]:
                 return None
-            db.execute("INSERT OR IGNORE INTO steps (run_id, seq, name, status, started_at)"
-                       " VALUES (?, ?, ?, 'running', ?)", (run_id, seq, name, now))
+            db.execute("INSERT OR IGNORE INTO steps (run_id, seq, name, status, started_at, busy_s)"
+                       " VALUES (?, ?, ?, 'running', ?, 0)", (run_id, seq, name, now))
             db.execute("UPDATE steps SET status = 'running'"
                        " WHERE run_id = ? AND seq = ? AND status NOT IN ('done', 'failed')",
                        (run_id, seq))
@@ -276,6 +288,10 @@ class Store:
     def add_cost(self, run_id: str, seq: int, usd: float) -> None:
         self.x("UPDATE steps SET cost_usd = cost_usd + ? WHERE run_id = ? AND seq = ?",
                (usd, run_id, seq))
+
+    def add_busy(self, run_id: str, seq: int, seconds: float) -> None:
+        self.x("UPDATE steps SET busy_s = COALESCE(busy_s, 0) + ? WHERE run_id = ? AND seq = ?",
+               (max(seconds, 0.0), run_id, seq))
 
     def run_cost(self, run_id: str) -> float:
         return self.q("SELECT COALESCE(SUM(cost_usd), 0) AS c FROM steps WHERE run_id = ?",
@@ -335,4 +351,4 @@ class Store:
     def _step(r: sqlite3.Row) -> StepRow:
         return StepRow(r["run_id"], r["seq"], r["name"], r["status"], r["attempts"],
                        _loads(r["output_json"]), r["error"], _loads(r["scratch_json"]) or {},
-                       r["cost_usd"], r["started_at"], r["finished_at"])
+                       r["cost_usd"], r["started_at"], r["finished_at"], r["busy_s"])

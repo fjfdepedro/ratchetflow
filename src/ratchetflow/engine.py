@@ -116,8 +116,13 @@ class Context:
                     raise StepFailed(f"{name}: {attempts} attempts used up ({error})")
                 attempts += 1
                 self._write(seq, attempts=attempts)   # counted before running: a crash counts
+                began = self._engine.now()
                 try:
-                    out = fn(*args, **kwargs)
+                    try:
+                        out = fn(*args, **kwargs)
+                    finally:
+                        # Working time only: waits for a person, pauses and backoff stay out.
+                        self._store.add_busy(self.run_id, seq, self._engine.now() - began)
                 except (Pause, NeedsHuman) as e:
                     self._write(seq, attempts=attempts - 1)
                     self._suspend_from(seq, e)
