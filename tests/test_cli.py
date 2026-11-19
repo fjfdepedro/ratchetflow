@@ -106,3 +106,25 @@ def test_inbox_as_json(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     main(["--app", app, "inbox", "--json"])
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_show_separates_working_time_from_waiting(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    app = write_app(tmp_path, """
+        from ratchetflow import NeedsHuman
+
+        @engine.workflow("w")
+        def w(ctx):
+            def ask():
+                if ctx.scratch.get("signal") is None:
+                    raise NeedsHuman("ok", "go on?")
+                return 1
+            return ctx.step("gate", ask)
+    """)
+    main(["--app", app, "start", "w", "--id", "r"])
+    Store(tmp_path / "flows.db").x("UPDATE steps SET started_at = started_at - 2220")
+    main(["--app", app, "signal", "r", "ok", "{}"])
+    main(["--app", app, "tick"])
+    capsys.readouterr()
+    main(["--app", app, "show", "r"])
+    assert "0s (+37m waiting)" in capsys.readouterr().out

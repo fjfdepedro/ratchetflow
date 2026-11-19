@@ -463,3 +463,51 @@ def test_the_inbox_lists_only_runs_waiting_for_a_person(make_engine):
     e.signal("h", "outline.ok", {})
     e.tick()
     assert "h" not in {item["run_id"] for item in e.store.inbox(BUDGET_EVENT)}
+
+
+def test_busy_time_counts_the_work_not_the_waits(make_engine, clock):
+    e = make_engine()
+    tries = []
+
+    @e.workflow("w")
+    def w(ctx):
+        def work():
+            clock.advance(5)               # every attempt works for 5 s
+            tries.append(1)
+            if len(tries) == 1:
+                raise Retryable("flaky")   # the backoff after it is not work
+            if ctx.scratch.get("signal") is None:
+                raise NeedsHuman("ok")
+            return "done"
+        return ctx.step("work", work)
+
+    e.start("w", run_id="r")
+    clock.advance(3600)                    # an hour waiting for a person
+    e.signal("r", "ok", {})
+    e.tick()
+    step = e.store.list_steps("r")[0]
+    assert step.status == "done"
+    assert step.busy_s == 15               # three attempts of 5 s
+    assert step.finished_at - step.started_at == 3615
+
+
+def test_a_database_from_0_1_gains_the_busy_column(tmp_path):
+    import sqlite3
+
+    from ratchetflow.store import SCHEMA, Store
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(SCHEMA.replace("    busy_s       REAL,"
+                                     "                   -- time spent running the step,"
+                                     " waits left out\n", ""))
+    old.execute("INSERT INTO runs (id, workflow, input_json, status, created_at, updated_at)"
+                " VALUES ('r', 'w', 'null', 'completed', 0, 0)")
+    old.execute("INSERT INTO steps (run_id, seq, name, status, started_at, finished_at)"
+                " VALUES ('r', 1, 'x', 'done', 0, 10)")
+    old.commit()
+    assert "busy_s" not in {r[1] for r in old.execute("PRAGMA table_info(steps)")}
+    old.close()
+    store = Store(path)
+    assert store.list_steps("r")[0].busy_s is None   # unknown, not zero
+    Store(path)                                       # a second open does not fail
