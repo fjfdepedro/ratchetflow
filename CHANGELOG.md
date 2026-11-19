@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The sdist is built from a closed list (package, tests, demo and docs). Before, a build from a
+  local checkout took in any untracked file next to the code; CI now fails if anything else
+  slips in. It also stops shipping the CI workflows and `uv.lock`.
 - A Claude session that ran out of `--max-budget-usd` was retried, spending again. The run now
   waits for `ratchet.budget` and resumes the same session.
 - `ratchet show` cut a waiting run's question to its first line.
