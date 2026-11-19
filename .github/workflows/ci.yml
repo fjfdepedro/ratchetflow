@@ -46,6 +46,20 @@ jobs:
           uv run ratchet --app demo.py:engine tick
           uv run ratchet --app demo.py:engine show a1 | grep -q completed
 
+  agent-sdk:
+    name: Agent SDK adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - name: Install with the Agent SDK
+        run: uv sync --locked --group agent-sdk
+      - name: Test
+        run: uv run pytest -q tests/test_claude_sdk_agent.py
+
   build:
     name: Build the package
     runs-on: ubuntu-latest

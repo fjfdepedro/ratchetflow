@@ -25,6 +25,7 @@ dependencies = []
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=2.10"]
+agent-sdk = ["claude-agent-sdk>=0.2.185"]
 
 [project.urls]
 Homepage = "https://github.com/fjfdepedro/ratchetflow"
@@ -36,6 +37,9 @@ Changelog = "https://github.com/fjfdepedro/ratchetflow/blob/main/CHANGELOG.md"
 ratchet = "ratchetflow.cli:entry"
 
 [dependency-groups]
+agent-sdk = [
+    "claude-agent-sdk>=0.2.185",
+]
 dev = [
     "anthropic>=2.10.0",
     "pytest>=8",

@@ -213,6 +213,29 @@ out = ctx.step("research", anthropic_api, ctx, "Find three sources on X; answer 
                tools=[SEARCH_TOOL], handlers={"search": search}, validate=check_sources)
 ```
 
+## The Claude Agent SDK adapter
+
+`ratchetflow.agents.claude_sdk` runs a session through the Python Agent SDK
+(`pip install "ratchetflow[agent-sdk]"`), for flows that need what only the SDK has: hooks,
+`can_use_tool`, your own tools as in-process MCP servers. Pass any `ClaudeAgentOptions`; the step
+works on a copy. It keeps the CLI adapter's guarantees:
+
+- stores the session id as soon as a message carries it, and a retry resumes it;
+- a rejected rate limit pauses until the reset the SDK reports, and quota text, overload,
+  `max_budget_usd` and `max_turns` are handled as in the CLI adapter;
+- `max_budget_usd` defaults to what is left of the run's budget; `total_cost_usd` goes to the
+  step, and an attempt cut off before its result is billed from the usage seen so far;
+- with `output_format`, `validate` gets the `structured_output`.
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions
+from ratchetflow.agents import claude_sdk
+
+out = ctx.step("review", claude_sdk, ctx, "Review the draft; answer in JSON",
+               options=ClaudeAgentOptions(cwd=folder, allowed_tools=["Read"]),
+               validate=check_review)
+```
+
 ## What ratchetflow does not do for you
 
 - **Idempotent external effects.** If the process dies after publishing and before storing the
@@ -229,6 +252,7 @@ out = ctx.step("research", anthropic_api, ctx, "Find three sources on X; answer 
 
 ```bash
 uv sync && uv run pytest -q
+uv sync --group agent-sdk && uv run pytest -q tests/test_claude_sdk_agent.py  # its own job
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules and [CHANGELOG.md](CHANGELOG.md) for

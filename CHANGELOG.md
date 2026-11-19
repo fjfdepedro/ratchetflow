@@ -27,6 +27,9 @@ All notable changes to this project are documented here. The format follows
 - `ratchetflow.agents.anthropic_api` (extra `ratchetflow[anthropic]`): a Messages API
   conversation with your own tools as one step, stored after every answer and every round of
   tool results, billed per answer and checked against the budget before every call.
+- `ratchetflow.agents.claude_sdk` (extra `ratchetflow[agent-sdk]`): a Claude Agent SDK session
+  as a step, resumed by session id, paused on a rejected rate limit until its reset, and capped
+  at the budget left.
 - `NeedsHuman(..., questions=[...])`: open points to settle along with the decision, listed
   numbered and apart in `ratchet inbox` (and as `questions` in `--json`).
 - `ctx.budget_left()`.
