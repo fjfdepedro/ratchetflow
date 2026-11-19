@@ -60,6 +60,7 @@ ratchet --app flows.py:engine inbox               # runs waiting for you, and ho
 ratchet --app flows.py:engine signal article-42 outline.ok '{"decision": "go on"}'
 ratchet --app flows.py:engine signal article-42 ratchet.budget '{"add_usd": 5}'
 ratchet --app flows.py:engine tick --loop 60      # or a systemd timer every minute
+ratchet --app flows.py:engine export > steps.jsonl  # one line per step: cost, time, tokens
 ```
 
 `runs`, `show`, `signal` and `retry` can also take `--db path/to/runs.db` instead of `--app`.
@@ -122,6 +123,9 @@ Budget top-ups show up there too; runs waiting for an external event, such as CI
   0.02 $ cap in one measurement);
 - with `expect_json=False`, `validate` gets the answer's text, for agents whose real output is
   the files they write (check them in `validate` and raise to retry in the same session);
+- returns the tokens of every attempt (`usage`: input, output, cache read and write) and the
+  `models` the session used, which `ratchet export` puts next to each step's cost and time (an
+  attempt cut off before the CLI's result is not in `usage`, though its cost is estimated);
 - adds `total_cost_usd` to the step's cost. An attempt cut off before the CLI reports its cost
   (timeout, kill, crash) is billed from the token usage streamed so far, at the prices in
   `ratchetflow.agents.claude.PRICES` (override with `prices=`). It is a lower bound: the stream

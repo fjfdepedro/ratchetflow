@@ -55,9 +55,15 @@ FAKE = textwrap.dedent(f"""\
         sys.stdout.buffer.write(b"\\xff\\xfe not utf-8\\n")
         sys.stdout.buffer.flush()
     if mode == "junk":
-        out({{"type": "result", "is_error": False, "result": "not json", "total_cost_usd": 0.5}})
+        out({{"type": "result", "is_error": False, "result": "not json", "total_cost_usd": 0.5,
+             "usage": {{"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100,
+                       "cache_creation_input_tokens": 1000}},
+             "modelUsage": {{"claude-haiku-5-5": {{}}}}}})
         sys.exit(0)
     out({{"type": "result", "is_error": False, "num_turns": 3, "total_cost_usd": 1.25,
+         "usage": {{"input_tokens": 2, "output_tokens": 50, "cache_read_input_tokens": 900,
+                   "cache_creation_input_tokens": 0}},
+         "modelUsage": {{"claude-sonnet-5-5": {{}}}},
          "result": "Done.\\n```json\\n{{\\"steps\\": [\\"a\\", \\"b\\"]}}\\n```"}})
     """)
 
@@ -124,6 +130,9 @@ def test_invalid_output_is_retried_asking_for_a_fix(make_engine, fake):
     assert e.store.get_run("r").status == "completed"
     assert "invalid output" in calls()[1]["stdin"]
     assert e.store.run_cost("r") == 1.75          # both attempts are paid for
+    out = e.store.get_run("r").output              # and both attempts' tokens are counted
+    assert out["usage"] == {"input": 12, "output": 55, "cache_read": 1000, "cache_write": 1000}
+    assert out["models"] == ["claude-haiku-5-5", "claude-sonnet-5-5"]
 
 
 def test_quota_used_up_pauses_until_the_reset(make_engine, fake):

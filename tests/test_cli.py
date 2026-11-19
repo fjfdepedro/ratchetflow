@@ -121,6 +121,41 @@ def test_inbox_lists_open_questions_apart_and_numbered(tmp_path, monkeypatch, ca
                                                                    "Which tag fits?"]
 
 
+def test_export_writes_one_json_line_per_step(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    app = write_app(tmp_path, """
+        from ratchetflow import NeedsHuman
+
+        @engine.workflow("w")
+        def w(ctx):
+            ctx.step("agent", lambda: {"text": "...", "data": None, "session_id": "s-1",
+                                       "turns": 2, "models": ["m"], "usage": {"output": 7}})
+            def ask():
+                if ctx.scratch.get("signal") is None:
+                    raise NeedsHuman("ok", "go on?")
+                return 1
+            return ctx.step("gate", ask)
+    """)
+    main(["--app", app, "start", "w", "--id", "a"])
+    main(["--app", app, "start", "w", "--id", "b"])
+    main(["--app", app, "signal", "b", "ok", "{}"])
+    main(["--app", app, "tick"])
+    capsys.readouterr()
+    main(["--app", app, "export"])
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [(r["run_id"], r["step"], r["status"]) for r in rows] == [
+        ("a", "agent", "done"), ("a", "gate", "waiting"), ("b", "agent", "done"),
+        ("b", "gate", "done")]
+    assert rows[0]["agent"] == {"models": ["m"], "turns": 2, "usage": {"output": 7},
+                                "session_id": "s-1"}
+    assert "agent" not in rows[3] and rows[3]["waited_s"] >= 0 and rows[3]["finished_at"]
+    assert rows[1]["error"] == "NeedsHuman: go on?" and rows[1]["finished_at"] is None
+    main(["--app", app, "export", "--status", "waiting"])
+    assert {json.loads(l)["run_id"] for l in capsys.readouterr().out.splitlines()} == {"a"}
+    main(["--app", app, "export", "b"])
+    assert len(capsys.readouterr().out.splitlines()) == 2
+
+
 def test_inbox_as_json(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     app = write_app(tmp_path, """
