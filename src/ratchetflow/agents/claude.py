@@ -80,7 +80,8 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     `validate` receives the JSON extracted from the answer, or with `expect_json=False` the
     answer's raw text (useful when the agent's real output is files it wrote). Whatever it
     returns becomes `data`. `max_budget_usd` caps the session; by default it is what is left of
-    the run's budget, so one long step cannot run far past it.
+    the run's budget, so one long step cannot run far past it. The CLI checks the cap between
+    turns: a session can overshoot by up to one turn.
     """
     scratch = ctx.scratch
     # A previous attempt died with the whole process: bill what it had spent before going on.
