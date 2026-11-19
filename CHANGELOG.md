@@ -24,6 +24,9 @@ All notable changes to this project are documented here. The format follows
 - `ratchetflow.agents.codex`: a step that runs `codex exec --json`, resumes its thread after a
   crash or an invalid answer, pauses until a usage limit resets and records tokens (and cost,
   with `prices=`).
+- `ratchetflow.agents.anthropic_api` (extra `ratchetflow[anthropic]`): a Messages API
+  conversation with your own tools as one step, stored after every answer and every round of
+  tool results, billed per answer and checked against the budget before every call.
 - `NeedsHuman(..., questions=[...])`: open points to settle along with the decision, listed
   numbered and apart in `ratchet inbox` (and as `questions` in `--json`).
 - `ctx.budget_left()`.
