@@ -29,12 +29,11 @@ uv run pytest -q
 | `src/ratchetflow/store.py` | SQLite schema (runs, steps, events) and every query; step writes are fenced by the lease owner |
 | `src/ratchetflow/errors.py` | `Retryable`, `Fatal`, `Pause`, `NeedsHuman` and the engine's errors |
 | `src/ratchetflow/agents/claude.py` | Step that runs `claude -p` with session resume, quota, timeout, validation and cost estimates |
-| `src/ratchetflow/cli.py` | `ratchet runs/show/signal/retry/tick/start` |
+| `src/ratchetflow/agents/codex.py` | Step that runs `codex exec --json` with thread resume, usage limits, validation and tokens |
+| `src/ratchetflow/agents/_common.py` | What the adapters share: the child process and its JSON lines, prices, validation |
+| `src/ratchetflow/cli.py` | `ratchet runs/show/inbox/signal/export/retry/tick/start/systemd` |
 | `examples/demo.py` | Token-free flow with a question for a human |
 
 ## Ideas on the table
 
-- Run steps in parallel (`ctx.parallel`), e.g. two reviews at once.
-- Wake up without polling: a systemd timer and unit template for `tick`.
-- Export a run's steps to JSONL for metrics.
-- More adapters: Claude Agent SDK, Codex CLI, the Anthropic API directly.
+- More adapters: Claude Agent SDK, the Anthropic API directly.

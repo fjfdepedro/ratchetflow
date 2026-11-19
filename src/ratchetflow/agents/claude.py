@@ -20,32 +20,20 @@ Usage:
 
 from __future__ import annotations
 
-import collections
-import json
-import os
-import queue
 import re
-import signal
-import subprocess
-import threading
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from ..engine import BUDGET_EVENT
 from ..errors import Fatal, NeedsHuman, Pause, Retryable
-
-DEFAULT_RESUME_PROMPT = (
-    "The previous session was cut off or its output was not valid. Before going on, check the "
-    "actual state (files, git) and do not redo what is already done. Previous error: {error}. "
-    "Finish with the output the original prompt asked for."
-)
+from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, price,
+                      reset_time, run_jsonl, validated)
 
 # USD per million tokens: (input, output, cache read), from Anthropic's price list (Nov 2026).
 # Cache writes cost 1.25x input (5-minute TTL) or 2x input (1-hour TTL). Only used to estimate
 # attempts that were cut off; pass `prices=` to `claude()` to override.
-PRICES: dict[str, tuple[float, float, float]] = {
+PRICES: Prices = {
     "claude-fable-5-2": (8.0, 40.0, 0.20),
     "claude-mythos-5-2": (8.0, 40.0, 0.20),
     "claude-fable-5-1": (10.0, 50.0, 0.25),
@@ -73,7 +61,7 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
            extra_args: Sequence[str] = (), bin: str = "claude",
            resume_prompt: str = DEFAULT_RESUME_PROMPT,
            env: Optional[dict] = None, now: Callable[[], datetime] = datetime.now,
-           prices: Optional[dict[str, tuple[float, float, float]]] = None,
+           prices: Optional[Prices] = None,
            expect_json: bool = True, max_budget_usd: Optional[float] = None) -> dict:
     """Runs one `claude -p` session as a step and returns its text, data, session and cost.
 
@@ -85,7 +73,7 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     """
     scratch = ctx.scratch
     # A previous attempt died with the whole process: bill what it had spent before going on.
-    _bill_unbilled(ctx, scratch.get("unbilled_usd"))
+    bill_unbilled(ctx, scratch.get("unbilled_usd"))
     session_id = scratch.get("session_id")
     cmd = [bin, "-p", "--output-format", "stream-json", "--verbose", *extra_args]
     if model:
@@ -111,7 +99,7 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     except BaseException:
         # Cut off before the CLI reported its cost: bill the estimate now.
         try:
-            _bill_unbilled(ctx, ctx.scratch.get("unbilled_usd"))
+            bill_unbilled(ctx, ctx.scratch.get("unbilled_usd"))
         except BaseException:  # noqa: BLE001 — never hide the original error
             pass
         raise
@@ -120,21 +108,14 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     # safer than too little for a budget).
     if result.get("total_cost_usd"):
         ctx.record_cost(float(result["total_cost_usd"]))
-    usage = _add_usage(ctx.scratch.get("usage"), result.get("usage"))
+    usage = add_usage(ctx.scratch.get("usage"), _short_usage(result.get("usage") or {}))
     models = sorted({*(ctx.scratch.get("models") or []), *(result.get("modelUsage") or {})})
     ctx.save_scratch(unbilled_usd=0, usage=usage, models=models)
     text = result.get("result") or ""
     if result.get("is_error"):
         _raise_for_error(ctx, text, result, now)
 
-    try:
-        data = (_extract_json(text) if expect_json else text) if validate else None
-        if validate:
-            data = validate(data)
-            json.dumps(data)  # whatever validates must be storable
-    except Exception as e:  # noqa: BLE001
-        ctx.save_scratch(last_error=f"invalid output: {e}"[:400])
-        raise Retryable(f"invalid output: {e}") from e
+    data = validated(ctx, text, validate, expect_json)
 
     return {"text": text, "data": data, "session_id": result.get("session_id"),
             "cost_usd": result.get("total_cost_usd"), "turns": result.get("num_turns"),
@@ -145,12 +126,8 @@ _USAGE = {"input": "input_tokens", "output": "output_tokens",
           "cache_read": "cache_read_input_tokens", "cache_write": "cache_creation_input_tokens"}
 
 
-def _add_usage(total: Optional[dict], usage: Optional[dict]) -> dict:
-    """Tokens of every attempt of the step so far, in four numbers."""
-    total = dict(total or dict.fromkeys(_USAGE, 0))
-    for short, key in _USAGE.items():
-        total[short] = total.get(short, 0) + int((usage or {}).get(key) or 0)
-    return total
+def _short_usage(usage: dict) -> dict:
+    return {short: usage.get(key) for short, key in _USAGE.items()}
 
 
 def _raise_for_error(ctx: Any, text: str, result: dict, now: Callable[[], datetime]) -> None:
@@ -169,39 +146,13 @@ def _raise_for_error(ctx: Any, text: str, result: dict, now: Callable[[], dateti
 
 def _reset_time(text: str, now: datetime, margin: timedelta = timedelta(minutes=2),
                 fallback: timedelta = timedelta(minutes=15)) -> datetime:
-    """The announced time is approximate, so a margin is added. With no time, poll every 15 min."""
-    m = _RESET.search(text)
-    if not m:
-        return now + fallback
-    hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
-    if ampm == "pm" and hour < 12:
-        hour += 12
-    if ampm == "am" and hour == 12:
-        hour = 0
-    at = now.replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
-    if at <= now:
-        at += timedelta(days=1)
-    return at + margin
-
-
-def _bill_unbilled(ctx: Any, usd: Optional[float]) -> None:
-    if usd:
-        ctx.record_cost(float(usd))
-        ctx.save_scratch(unbilled_usd=0)
-
-
-def _price(model: str, prices: dict[str, tuple[float, float, float]]) -> tuple[float, float, float]:
-    """Longest matching prefix; an unknown model gets the highest price of each kind."""
-    match = max((k for k in prices if model.startswith(k)), key=len, default=None)
-    if match:
-        return prices[match]
-    return tuple(max(p[i] for p in prices.values()) for i in range(3))  # type: ignore[return-value]
+    return reset_time(_RESET.search(text), now, margin, fallback)
 
 
 def estimate_cost(usage: dict, model: str,
-                  prices: Optional[dict[str, tuple[float, float, float]]] = None) -> float:
+                  prices: Optional[Prices] = None) -> float:
     """USD for one API message's `usage`, as Anthropic bills it."""
-    inp, out, read = _price(model, prices or PRICES)
+    inp, out, read = price(model, prices or PRICES)
     written = usage.get("cache_creation_input_tokens") or 0
     detail = usage.get("cache_creation") or {}
     written_1h = detail.get("ephemeral_1h_input_tokens") or 0
@@ -215,99 +166,34 @@ def estimate_cost(usage: dict, model: str,
     ) / 1_000_000
 
 
-def _extract_json(text: str) -> Any:
-    """The last ```json``` block of the answer or, if there is none, the whole answer."""
-    blocks = re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.S)
-    return json.loads(blocks[-1] if blocks else text)
-
-
 def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
                 env: Optional[dict], timeout_s: float,
                 on_session: Callable[[str], None],
                 on_usage: Callable[[float], None] = lambda _usd: None,
-                prices: Optional[dict[str, tuple[float, float, float]]] = None,
+                prices: Optional[Prices] = None,
                 stop: Callable[[], bool] = lambda: False) -> dict:
-    proc = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
-                            start_new_session=True)
-    assert proc.stdin and proc.stdout and proc.stderr
-    lines: "queue.Queue[Optional[str]]" = queue.Queue()
-    stderr_tail: collections.deque[str] = collections.deque(maxlen=50)
-
-    def read_stdout() -> None:
-        assert proc.stdout
-        for line in proc.stdout:
-            lines.put(line)
-        lines.put(None)
-
-    def read_stderr() -> None:
-        # Always drained: a full stderr pipe would block the CLI until the timeout.
-        assert proc.stderr
-        for line in proc.stderr:
-            stderr_tail.append(line)
-
-    threading.Thread(target=read_stdout, daemon=True).start()
-    err_reader = threading.Thread(target=read_stderr, daemon=True)
-    err_reader.start()
-    deadline = time.monotonic() + timeout_s
     result: dict = {}
     announced = False
     # Usage per API message. The stream repeats a message once per content block, and its
     # output_tokens is the count when the message started, so the estimate is a lower bound.
     usage_by_msg: dict[str, float] = {}
-    try:
-        proc.stdin.write(stdin_text)
-        proc.stdin.close()
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise TimeoutError(f"the agent went over {timeout_s:.0f}s")
-            if stop():   # the run is being stopped from another thread (ctx.parallel)
-                raise KeyboardInterrupt("run stopped")
-            try:
-                line = lines.get(timeout=min(left, 0.5))
-            except queue.Empty:
-                continue
-            if line is None:
-                break
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            sid = ev.get("session_id")
-            if sid and not announced:
-                on_session(sid)  # to disk now: if we die next, the retry resumes it
-                announced = True
-            msg = ev.get("message") if ev.get("type") == "assistant" else None
-            if isinstance(msg, dict) and msg.get("id") and msg.get("usage"):
-                usd = estimate_cost(msg["usage"], msg.get("model") or "", prices)
-                if usage_by_msg.get(msg["id"]) != usd:
-                    usage_by_msg[msg["id"]] = usd
-                    on_usage(sum(usage_by_msg.values()))  # to disk: billable even if we die
-            if ev.get("type") == "result":
-                result = ev
-        proc.wait(timeout=30)
-    except BaseException:
-        _kill_group(proc)
-        raise
+
+    def on_event(ev: dict) -> None:
+        nonlocal announced, result
+        sid = ev.get("session_id")
+        if sid and not announced:
+            on_session(sid)  # to disk now: if we die next, the retry resumes it
+            announced = True
+        msg = ev.get("message") if ev.get("type") == "assistant" else None
+        if isinstance(msg, dict) and msg.get("id") and msg.get("usage"):
+            usd = estimate_cost(msg["usage"], msg.get("model") or "", prices)
+            if usage_by_msg.get(msg["id"]) != usd:
+                usage_by_msg[msg["id"]] = usd
+                on_usage(sum(usage_by_msg.values()))  # to disk: billable even if we die
+        if ev.get("type") == "result":
+            result = ev
+
+    code, err = run_jsonl(cmd, stdin_text, cwd, env, timeout_s, on_event, stop)
     if not result:
-        err_reader.join(timeout=1)
-        err = "".join(stderr_tail)[-400:]
-        raise Retryable(f"the CLI exited (code {proc.returncode}) without a result event: {err}")
+        raise Retryable(f"the CLI exited (code {code}) without a result event: {err}")
     return result
-
-
-def _kill_group(proc: subprocess.Popen, grace_s: float = 10) -> None:
-    """SIGTERM to the whole group and SIGKILL if it does not go: no zombie agents."""
-    pgid = proc.pid  # start_new_session: the CLI leads its own group, even after it exits
-    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 5)):
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=wait)
-            return
-        except subprocess.TimeoutExpired:
-            continue

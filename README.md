@@ -165,6 +165,29 @@ Budget top-ups show up there too; runs waiting for an external event, such as CI
   `ratchetflow.agents.claude.PRICES` (override with `prices=`). It is a lower bound: the stream
   under-reports output tokens.
 
+## The Codex CLI adapter
+
+`ratchetflow.agents.codex` runs `codex exec --json` as a step, with the same guarantees:
+
+- stores the thread id as soon as the CLI announces it; if the process dies or the answer does
+  not validate, the retry runs `codex exec resume <thread>` asking it to check and finish;
+- usage limit reached ("Try again at 3:45 PM") -> `Pause` until then plus two minutes (every 15
+  minutes when no time is given); any other failed turn -> retry; timeout -> kills the group;
+- `output_schema=` (a JSON Schema) goes to `--output-schema`, and the answer comes back parsed
+  in `data`; `sandbox=` goes to `--sandbox`;
+- returns the tokens of every attempt in `usage`. Codex reports no dollars, and with a ChatGPT
+  sign-in the subscription pays, so **by default the step costs 0 and the budget does not apply**.
+  With an API key, pass `prices={"gpt-5": (input, output, cached_input)}` (USD per million tokens,
+  by model prefix) to bill it. An attempt cut off mid-turn bills nothing: Codex only reports
+  tokens when a turn completes.
+
+```python
+from ratchetflow.agents import codex
+
+out = ctx.step("tests", codex, ctx, "Add tests for the parser; answer with a JSON summary",
+               cwd=repo, sandbox="workspace-write", validate=check_summary)
+```
+
 ## What ratchetflow does not do for you
 
 - **Idempotent external effects.** If the process dies after publishing and before storing the
