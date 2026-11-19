@@ -1,4 +1,4 @@
-"""CLI: `ratchet runs | show | inbox | signal | retry | tick | start`.
+"""CLI: `ratchet runs | show | inbox | signal | export | retry | tick | start`.
 
 `tick` and `start` need the workflows: `--app module:engine` or `--app file.py:engine` (or the
 RATCHET_APP variable). The other commands only read or write the database: the one of `--app`
@@ -69,6 +69,27 @@ def _duration(step) -> str:
     return _span(step.busy_s) + (f" (+{_span(waited)} waiting)" if waited >= 1 else "")
 
 
+def _iso(ts: Optional[float]) -> Optional[str]:
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds") if ts else None
+
+
+def _export_row(run, step) -> dict:
+    """One step, flat enough for pandas or DuckDB. Agent steps add what the session used."""
+    wall = step.finished_at - step.started_at if step.finished_at else None
+    row = {"run_id": run.id, "workflow": run.workflow, "run_status": run.status,
+           "seq": step.seq, "step": step.name, "status": step.status,
+           "attempts": step.attempts, "cost_usd": round(step.cost_usd, 6),
+           "busy_s": step.busy_s, "waited_s": (round(wall - step.busy_s, 3)
+                                               if wall is not None and step.busy_s is not None
+                                               else None),
+           "started_at": _iso(step.started_at), "finished_at": _iso(step.finished_at),
+           "error": step.error.splitlines()[0] if step.error else None}
+    out = step.output
+    if isinstance(out, dict) and "session_id" in out and "turns" in out:
+        row["agent"] = {k: out.get(k) for k in ("models", "turns", "usage", "session_id")}
+    return row
+
+
 def _fmt_t(ts: Optional[float]) -> str:
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S") if ts else "-"
 
@@ -95,6 +116,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     g.add_argument("run_id")
     g.add_argument("event")
     g.add_argument("payload", nargs="?", default="null", help="JSON")
+
+    x = sub.add_parser("export", help="steps as JSON Lines (cost, time, tokens), for metrics")
+    x.add_argument("run_ids", nargs="*", help="default: every run")
+    x.add_argument("--status", help="only runs in this status")
 
     t = sub.add_parser("retry", help="reopen a failed run")
     t.add_argument("run_id")
@@ -184,6 +209,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print(f"    {line}")
             payload = '{"add_usd": <USD>}' if item["event"] == BUDGET_EVENT else "<json>"
             print(f"  answer: ratchet signal {item['run_id']} {item['event']} '{payload}'\n")
+        return 0
+    if a.cmd == "export":
+        runs = ([store.get_run(r) for r in a.run_ids] if a.run_ids
+                else list(reversed(store.list_runs(a.status, 1_000_000))))
+        for run in runs:
+            if run is None or (a.status and run.status != a.status):
+                continue
+            for step in store.list_steps(run.id):
+                print(json.dumps(_export_row(run, step), ensure_ascii=False))
         return 0
     if a.cmd == "signal":
         if not store.get_run(a.run_id):

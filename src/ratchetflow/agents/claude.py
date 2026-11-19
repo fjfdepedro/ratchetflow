@@ -119,7 +119,9 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     # safer than too little for a budget).
     if result.get("total_cost_usd"):
         ctx.record_cost(float(result["total_cost_usd"]))
-    ctx.save_scratch(unbilled_usd=0)
+    usage = _add_usage(ctx.scratch.get("usage"), result.get("usage"))
+    models = sorted({*(ctx.scratch.get("models") or []), *(result.get("modelUsage") or {})})
+    ctx.save_scratch(unbilled_usd=0, usage=usage, models=models)
     text = result.get("result") or ""
     if result.get("is_error"):
         _raise_for_error(ctx, text, result, now)
@@ -134,7 +136,20 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
         raise Retryable(f"invalid output: {e}") from e
 
     return {"text": text, "data": data, "session_id": result.get("session_id"),
-            "cost_usd": result.get("total_cost_usd"), "turns": result.get("num_turns")}
+            "cost_usd": result.get("total_cost_usd"), "turns": result.get("num_turns"),
+            "usage": usage, "models": models or ([model] if model else [])}
+
+
+_USAGE = {"input": "input_tokens", "output": "output_tokens",
+          "cache_read": "cache_read_input_tokens", "cache_write": "cache_creation_input_tokens"}
+
+
+def _add_usage(total: Optional[dict], usage: Optional[dict]) -> dict:
+    """Tokens of every attempt of the step so far, in four numbers."""
+    total = dict(total or dict.fromkeys(_USAGE, 0))
+    for short, key in _USAGE.items():
+        total[short] = total.get(short, 0) + int((usage or {}).get(key) or 0)
+    return total
 
 
 def _raise_for_error(ctx: Any, text: str, result: dict, now: Callable[[], datetime]) -> None:

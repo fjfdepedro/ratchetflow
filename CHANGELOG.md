@@ -13,6 +13,9 @@ All notable changes to this project are documented here. The format follows
 - `NeedsHuman(event, reason, details=...)`: JSON context shown in the inbox.
 - `ctx.now(name)` and `ctx.random(name)`: the time and a random number, read once per run and
   returned unchanged on every replay.
+- `ratchet export [run ...] [--status S]`: every step as one JSON line (cost, working and waiting
+  time, attempts, error, and for agent steps the models, turns and tokens), for metrics.
+- The Claude adapter returns `usage` (tokens of all the step's attempts) and `models`.
 - `NeedsHuman(..., questions=[...])`: open points to settle along with the decision, listed
   numbered and apart in `ratchet inbox` (and as `questions` in `--json`).
 - `ctx.budget_left()`.
