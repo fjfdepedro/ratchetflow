@@ -520,3 +520,43 @@ def test_needs_human_questions_must_be_strings():
         NeedsHuman("ok", questions=[{"q": 1}])
     assert NeedsHuman("ok", questions=["a", " "]).questions == ["a"]
     assert NeedsHuman("ok").questions == []
+
+
+def test_now_and_random_are_the_same_on_replay(make_engine, clock):
+    e = make_engine()
+    seen = []
+
+    @e.workflow("w")
+    def w(ctx):
+        day = ctx.now("today")
+        luck = ctx.random("luck")
+        seen.append((day, luck))
+        ctx.step("approval", _wait_for_ok, ctx)
+        return {"day": day.isoformat(), "luck": luck}
+
+    e.start("w", run_id="r")
+    clock.advance(86_400)                  # the person answers the next day
+    e.signal("r", "ok", {})
+    e.tick()
+    assert e.store.get_run("r").status == "completed"
+    assert len(seen) == 2 and seen[0] == seen[1]
+    assert seen[0][0].timestamp() == 1_000_000.0
+    assert 0 <= seen[0][1] < 1
+
+
+def test_now_does_not_wait_for_the_budget(make_engine):
+    e = make_engine()
+
+    @e.workflow("w")
+    def w(ctx):
+        ctx.step("spend", lambda: ctx.record_cost(1.0))
+        return ctx.now("stamp").year
+
+    e.start("w", run_id="r", budget_usd=0.5)
+    assert e.store.get_run("r").status == "completed"
+
+
+def _wait_for_ok(ctx):
+    if ctx.scratch.get("signal") is None:
+        raise NeedsHuman("ok")
+    return True
