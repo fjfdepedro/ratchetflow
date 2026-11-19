@@ -96,6 +96,22 @@ same date: use them instead of `datetime.now()`, `date.today()` or `random` in t
 `ctx.record_cost(usd)` (counts towards the run's `--budget`: once over it, the run waits for
 `ratchet.budget`) and `ctx.save_scratch(...)` for a step's intermediate state.
 
+Steps can run at once, each in its own thread:
+
+```python
+style, facts = ctx.parallel(
+    ctx.call("review-style", claude, ctx, "Review the style of draft.md."),
+    ctx.call("review-facts", claude, ctx, "Check every fact in draft.md.", model="claude-sonnet-5-5"),
+)
+```
+
+Each branch is an ordinary step (its own name, retries, cost and scratch). Every branch runs to
+its end before `parallel` returns or raises: a failed branch raises `StepFailed`, and one that
+pauses or needs a person makes the run wait, with the finished branches kept for the replay.
+SIGTERM or Ctrl-C stops every branch's agent (`ctx.cancelled()` lets your own long steps notice
+too). The budget is checked once before starting, so branches together can overshoot it by one
+turn each.
+
 Starting a run again with the same `--id` neither duplicates it nor wakes it before its time.
 
 `ratchet inbox` lists the runs waiting for a person: the whole question, its `details` (whatever

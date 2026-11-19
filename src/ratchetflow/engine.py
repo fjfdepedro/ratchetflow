@@ -57,6 +57,18 @@ def _lost_lease() -> _SuspendWith:
 
 
 @dataclass
+class Call:
+    """One branch of `ctx.parallel`, made with `ctx.call(...)`."""
+    name: str
+    fn: Callable[..., Any]
+    args: tuple
+    kwargs: dict
+    retries: int
+    backoff_s: float
+    max_backoff_s: float
+
+
+@dataclass
 class Workflow:
     name: str
     fn: Callable[..., Any]
@@ -81,7 +93,24 @@ class Context:
         self._budget = run.budget_usd
         self._seq = 0
         self._names: set[str] = set()
-        self._current: Optional[StepRow] = None
+        self._local = threading.local()   # the step running in each thread (ctx.parallel)
+        self._cancel = threading.Event()
+
+    def cancelled(self) -> bool:
+        """True once the run is being stopped (SIGTERM, Ctrl-C) while `ctx.parallel` runs.
+
+        Signals only reach the main thread; a long step in a branch checks this to stop too.
+        The Claude adapter does: the agent's process group dies with the run.
+        """
+        return self._cancel.is_set()
+
+    @property
+    def _current(self) -> Optional[StepRow]:
+        return getattr(self._local, "row", None)
+
+    @_current.setter
+    def _current(self, row: Optional[StepRow]) -> None:
+        self._local.row = row
 
     # --- public API -------------------------------------------------------
 
@@ -105,6 +134,73 @@ class Context:
             # It already failed and the workflow caught it: replay the failure, not the step.
             raise StepFailed(f"{name}: {row.error}")
         self._check_budget(seq)
+        return self._run_step(seq, name, fn, args, kwargs, retries, backoff_s, max_backoff_s)
+
+    def call(self, name: str, fn: Callable[..., Any], *args: Any, retries: int = 3,
+             backoff_s: float = 2.0, max_backoff_s: float = 300.0, **kwargs: Any) -> "Call":
+        """A step to hand to `ctx.parallel`; on its own it does nothing."""
+        return Call(name, fn, args, kwargs, retries, backoff_s, max_backoff_s)
+
+    def parallel(self, *calls: "Call") -> list[Any]:
+        """Runs several steps at once, each in its own thread, and returns their outputs in order.
+
+        Each one is an ordinary step (name, retries, cost, scratch), so `claude(ctx, ...)` works
+        inside. Step numbers are taken in order before anything starts, so replays line up.
+        Every branch runs to its end before this returns or raises: a branch that fails makes it
+        raise `StepFailed`, and one that pauses or needs a person makes the run wait; on resume,
+        finished branches return their stored output. The budget is checked once, before
+        starting, so branches running together can overshoot it by one turn each.
+        """
+        if not calls or not all(isinstance(c, Call) for c in calls):
+            raise TypeError("ctx.parallel takes ctx.call(...) items")
+        slots: list[tuple[int, Optional[StepRow], Call]] = []
+        for c in calls:
+            seq, row = self._enter(c.name)
+            slots.append((seq, row, c))
+        results: list[Any] = [None] * len(calls)
+        errors: list[Optional[BaseException]] = [None] * len(calls)
+        todo = []
+        for i, (seq, row, c) in enumerate(slots):
+            if row is not None and row.status == "done":
+                results[i] = row.output
+            elif row is not None and row.status == "failed":
+                errors[i] = StepFailed(f"{c.name}: {row.error}")
+            else:
+                todo.append(i)
+        if todo:
+            self._check_budget(slots[todo[0]][0])
+
+        def branch(i: int) -> None:
+            seq, _row, c = slots[i]
+            try:
+                results[i] = self._run_step(seq, c.name, c.fn, c.args, c.kwargs, c.retries,
+                                            c.backoff_s, c.max_backoff_s)
+            except BaseException as e:  # noqa: BLE001 — sorted out below, after every branch
+                errors[i] = e
+
+        threads = [threading.Thread(target=branch, args=(i,), daemon=True) for i in todo]
+        for t in threads:
+            t.start()
+        try:
+            for t in threads:
+                t.join()
+        except BaseException:
+            # SIGTERM or Ctrl-C landed here, in the main thread: tell the branches and give them
+            # time to kill their agents before the process goes.
+            self._cancel.set()
+            for t in threads:
+                t.join(timeout=60)
+            raise
+        # What wins: a lost lease (stop now), then the first failure, then the first wait.
+        lost = [e for e in errors if isinstance(e, _SuspendWith) and e.suspension.lost_lease]
+        failed = [e for e in errors if e is not None and not isinstance(e, _SuspendWith)]
+        waiting = [e for e in errors if isinstance(e, _SuspendWith)]
+        if lost or failed or waiting:
+            raise (lost or failed or waiting)[0]
+        return results
+
+    def _run_step(self, seq: int, name: str, fn: Callable[..., Any], args: tuple, kwargs: dict,
+                  retries: int, backoff_s: float, max_backoff_s: float) -> Any:
         row = self._start(seq, name)
         self._absorb_human_signal(row)
         self._current = row

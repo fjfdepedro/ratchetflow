@@ -560,3 +560,96 @@ def _wait_for_ok(ctx):
     if ctx.scratch.get("signal") is None:
         raise NeedsHuman("ok")
     return True
+
+
+def test_parallel_runs_the_branches_at_once_and_keeps_their_order(make_engine):
+    import threading
+    e = make_engine()
+    both = threading.Barrier(2, timeout=5)   # one at a time, the first would wait forever
+
+    def meet(x):
+        both.wait()
+        return x * 10
+
+    @e.workflow("w")
+    def w(ctx):
+        a, b = ctx.parallel(ctx.call("a", meet, 1), ctx.call("b", meet, 2))
+        return ctx.step("after", lambda: [a, b])
+
+    e.start("w", run_id="r")
+    assert e.store.get_run("r").output == [10, 20]
+    assert [s.name for s in e.store.list_steps("r")] == ["a", "b", "after"]
+
+
+def test_parallel_waits_for_a_person_without_redoing_finished_branches(make_engine):
+    e = make_engine()
+    ran = []
+
+    @e.workflow("w")
+    def w(ctx):
+        def quick():
+            ran.append("quick")
+            return "q"
+
+        def ask():
+            ran.append("ask")
+            if ctx.scratch.get("signal") is None:
+                raise NeedsHuman("ok", "go on?")
+            return ctx.scratch["signal"]["v"]
+
+        return ctx.parallel(ctx.call("quick", quick), ctx.call("ask", ask))
+
+    e.start("w", run_id="r")
+    run = e.store.get_run("r")
+    assert run.status == "waiting" and run.wait_event == "ok"
+    e.signal("r", "ok", {"v": "yes"})
+    e.tick()
+    assert e.store.get_run("r").output == ["q", "yes"]
+    assert ran.count("quick") == 1 and ran.count("ask") == 2
+
+
+def test_a_failed_branch_fails_the_parallel_after_the_others_finish(make_engine):
+    e = make_engine()
+
+    @e.workflow("w")
+    def w(ctx):
+        def bad():
+            raise Fatal("no")
+        try:
+            ctx.parallel(ctx.call("ok", lambda: 1), ctx.call("bad", bad))
+        except StepFailed as err:
+            return str(err)
+
+    e.start("w", run_id="r")
+    assert e.store.get_run("r").output == "bad: no"
+    assert {s.name: s.status for s in e.store.list_steps("r")} == {"ok": "done", "bad": "failed"}
+    e.run("r")                                  # replays the same failure, runs nothing again
+
+
+def test_parallel_takes_only_calls(make_engine):
+    e = make_engine()
+
+    @e.workflow("w")
+    def w(ctx):
+        ctx.parallel(lambda: 1)
+
+    e.start("w", run_id="r")
+    run = e.store.get_run("r")
+    assert run.status == "failed" and "ctx.call" in run.error
+
+
+def test_a_failure_wins_over_a_branch_that_waits(make_engine):
+    e = make_engine()
+
+    @e.workflow("w")
+    def w(ctx):
+        def bad():
+            raise Fatal("no")
+
+        def ask():
+            raise NeedsHuman("ok", "go on?")
+        ctx.parallel(ctx.call("ask", ask), ctx.call("bad", bad))
+
+    e.start("w", run_id="r")
+    run = e.store.get_run("r")
+    assert run.status == "failed" and "bad: no" in run.error

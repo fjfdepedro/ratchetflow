@@ -60,7 +60,7 @@ def test_sigterm_kills_the_agent_and_releases_the_lease(tmp_path):
     while not child_file.exists() and time.monotonic() < end:
         time.sleep(0.05)
     time.sleep(0.2)
-    child = int(child_file.read_text())
+    child = int(child_file.read_text().split()[0])
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(timeout=30) == 130
     time.sleep(0.2)
@@ -68,6 +68,38 @@ def test_sigterm_kills_the_agent_and_releases_the_lease(tmp_path):
         os.kill(child, 0)                                  # the grandchild died with its parent
     run = Store(tmp_path / "flows.db").get_run("r")
     assert run.owner is None and run.lease_until is None   # can be resumed right away
+
+
+def test_sigterm_kills_every_agent_of_a_parallel_step(tmp_path):
+    bin_ = tmp_path / "claude-fake"
+    bin_.write_text(FAKE)
+    bin_.chmod(bin_.stat().st_mode | stat.S_IEXEC)
+    log = tmp_path / "calls.jsonl"
+    app = write_app(tmp_path, f"""
+        @engine.workflow("w")
+        def w(ctx):
+            return ctx.parallel(*[ctx.call(n, claude, ctx, "hi", bin={str(bin_)!r}, timeout_s=600)
+                                  for n in ("a", "b")])
+    """)
+    env = {**os.environ, "FAKE_LOG": str(log), "FAKE_MODES": "hang"}
+    proc = subprocess.Popen([sys.executable, "-m", "ratchetflow.cli", "--app", app,
+                             "start", "w", "--id", "r"], env=env, cwd=tmp_path)
+    child_file = tmp_path / "calls.jsonl.child"
+    end = time.monotonic() + 20
+    while (not child_file.exists() or len(child_file.read_text().split()) < 2) \
+            and time.monotonic() < end:
+        time.sleep(0.05)
+    time.sleep(0.2)
+    children = [int(p) for p in child_file.read_text().split()]
+    assert len(children) == 2                              # both agents were running at once
+    proc.send_signal(signal.SIGTERM)
+    assert proc.wait(timeout=60) == 130
+    time.sleep(0.2)
+    for child in children:
+        with pytest.raises(ProcessLookupError):
+            os.kill(child, 0)
+    run = Store(tmp_path / "flows.db").get_run("r")
+    assert run.owner is None and run.lease_until is None
 
 
 def test_inbox_shows_the_whole_question_its_details_and_how_to_answer(tmp_path, monkeypatch, capsys):

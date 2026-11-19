@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format follows
 - `ratchet inbox` (and `--json`): runs waiting for a person, with the whole question, its
   details and the exact `ratchet signal` to answer. Budget top-ups are listed too.
 - `NeedsHuman(event, reason, details=...)`: JSON context shown in the inbox.
+- `ctx.parallel(ctx.call(name, fn, ...), ...)`: steps that run at once, each in its own thread,
+  with outputs in order. SIGTERM stops every branch's agent; `ctx.cancelled()` tells other long
+  steps.
 - `ctx.now(name)` and `ctx.random(name)`: the time and a random number, read once per run and
   returned unchanged on every replay.
 - `ratchet export [run ...] [--status S]`: every step as one JSON line (cost, working and waiting
