@@ -511,3 +511,12 @@ def test_a_database_from_0_1_gains_the_busy_column(tmp_path):
     store = Store(path)
     assert store.list_steps("r")[0].busy_s is None   # unknown, not zero
     Store(path)                                       # a second open does not fail
+
+
+def test_needs_human_questions_must_be_strings():
+    with pytest.raises(TypeError):
+        NeedsHuman("ok", questions="one question")      # a bare string is not a list
+    with pytest.raises(TypeError):
+        NeedsHuman("ok", questions=[{"q": 1}])
+    assert NeedsHuman("ok", questions=["a", " "]).questions == ["a"]
+    assert NeedsHuman("ok").questions == []

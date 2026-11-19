@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 - `ratchet inbox` (and `--json`): runs waiting for a person, with the whole question, its
   details and the exact `ratchet signal` to answer. Budget top-ups are listed too.
 - `NeedsHuman(event, reason, details=...)`: JSON context shown in the inbox.
+- `NeedsHuman(..., questions=[...])`: open points to settle along with the decision, listed
+  numbered and apart in `ratchet inbox` (and as `questions` in `--json`).
 - `ctx.budget_left()`.
 - `claude(..., expect_json=False)`: `validate` receives the answer's text, to check the files an
   agent wrote.

@@ -95,6 +95,32 @@ def test_inbox_shows_the_whole_question_its_details_and_how_to_answer(tmp_path, 
     assert capsys.readouterr().out.count("Long context.") >= 40   # show no longer cuts it
 
 
+def test_inbox_lists_open_questions_apart_and_numbered(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    app = write_app(tmp_path, """
+        from ratchetflow import NeedsHuman
+
+        @engine.workflow("w")
+        def w(ctx):
+            def review():
+                if ctx.scratch.get("signal") is None:
+                    raise NeedsHuman("draft.ok", "Publish the draft?",
+                                     details={"report": "long report"},
+                                     questions=["Keep the old title?", "Which tag fits?"])
+                return "ok"
+            return ctx.step("review", review)
+    """)
+    main(["--app", app, "start", "w", "--id", "r"])
+    capsys.readouterr()
+    main(["--app", app, "inbox"])
+    out = capsys.readouterr().out
+    assert "  open questions:\n    1. Keep the old title?\n    2. Which tag fits?\n" in out
+    assert out.index("open questions") < out.index("details:")
+    main(["--app", app, "inbox", "--json"])
+    assert json.loads(capsys.readouterr().out)[0]["questions"] == ["Keep the old title?",
+                                                                   "Which tag fits?"]
+
+
 def test_inbox_as_json(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     app = write_app(tmp_path, """

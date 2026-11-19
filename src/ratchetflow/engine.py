@@ -267,7 +267,8 @@ class Context:
         step = self._store.get_step(self.run_id, seq)
         assert step is not None
         self._write(seq, scratch={**step.scratch, "waiting_event": e.event, "question": str(e),
-                                  "details": _jsonable(e.details, f"details of {e.event!r}")})
+                                  "details": _jsonable(e.details, f"details of {e.event!r}"),
+                                  "questions": e.questions})
         raise _SuspendWith(_Suspension(event=e.event, reason=str(e)))
 
     def _fail_step(self, seq: int, attempts: int, error: str) -> None:

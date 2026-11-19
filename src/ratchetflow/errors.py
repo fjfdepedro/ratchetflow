@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional, Sequence
 
 
 class Retryable(Exception):
@@ -27,13 +27,20 @@ class NeedsHuman(Exception):
 
     The run waits for `event`, sent with `ratchet signal <run> <event>`. `reason` is the question
     and `details` (JSON) whatever the person needs to answer it; `ratchet inbox` shows both whole.
+    `questions` are open points to settle along with it (say, doubts an agent left in its
+    report), listed numbered and apart so they do not get lost inside `details`.
     """
 
-    def __init__(self, event: str, reason: str = "", details: Any = None):
+    def __init__(self, event: str, reason: str = "", details: Any = None,
+                 questions: Optional[Sequence[str]] = None):
         super().__init__(reason or f"waiting for event {event!r}")
+        if questions is not None and (isinstance(questions, str)
+                                      or not all(isinstance(q, str) for q in questions)):
+            raise TypeError("questions must be a list of strings")
         self.event = event
         self.reason = reason
         self.details = details
+        self.questions = [q for q in questions or [] if q.strip()]
 
 
 class Fatal(Exception):
