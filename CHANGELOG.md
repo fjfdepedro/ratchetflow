@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 - `ratchet inbox` (and `--json`): runs waiting for a person, with the whole question, its
   details and the exact `ratchet signal` to answer. Budget top-ups are listed too.
 - `NeedsHuman(event, reason, details=...)`: JSON context shown in the inbox.
+- `ratchet systemd [--every 1min] [--name N] [--install]`: a systemd user service and timer
+  that run `tick` again after each one ends.
 - `ctx.parallel(ctx.call(name, fn, ...), ...)`: steps that run at once, each in its own thread,
   with outputs in order. SIGTERM stops every branch's agent; `ctx.cancelled()` tells other long
   steps.
