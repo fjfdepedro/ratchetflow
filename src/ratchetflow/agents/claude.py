@@ -106,7 +106,8 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
         result = _run_stream(cmd, stdin_text, cwd, env, timeout_s,
                              on_session=lambda sid: ctx.save_scratch(session_id=sid),
                              on_usage=lambda usd: ctx.save_scratch(unbilled_usd=usd),
-                             prices=prices or PRICES)
+                             prices=prices or PRICES,
+                             stop=getattr(ctx, "cancelled", None) or (lambda: False))
     except BaseException:
         # Cut off before the CLI reported its cost: bill the estimate now.
         try:
@@ -224,7 +225,8 @@ def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
                 env: Optional[dict], timeout_s: float,
                 on_session: Callable[[str], None],
                 on_usage: Callable[[float], None] = lambda _usd: None,
-                prices: Optional[dict[str, tuple[float, float, float]]] = None) -> dict:
+                prices: Optional[dict[str, tuple[float, float, float]]] = None,
+                stop: Callable[[], bool] = lambda: False) -> dict:
     proc = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
@@ -261,8 +263,10 @@ def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
             left = deadline - time.monotonic()
             if left <= 0:
                 raise TimeoutError(f"the agent went over {timeout_s:.0f}s")
+            if stop():   # the run is being stopped from another thread (ctx.parallel)
+                raise KeyboardInterrupt("run stopped")
             try:
-                line = lines.get(timeout=min(left, 5))
+                line = lines.get(timeout=min(left, 0.5))
             except queue.Empty:
                 continue
             if line is None:

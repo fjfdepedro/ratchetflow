@@ -16,11 +16,13 @@ from ratchetflow.agents.claude import _reset_time, estimate_cost
 
 FAKE = textwrap.dedent(f"""\
     #!{sys.executable}
-    import json, os, subprocess, sys, time
+    import fcntl, json, os, subprocess, sys, time
     log = os.environ["FAKE_LOG"]
     with open(log, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)   # agents in parallel: each call gets its own number
         f.write(json.dumps({{"argv": sys.argv[1:], "stdin": sys.stdin.read()}}) + "\\n")
-    calls = sum(1 for _ in open(log))
+        f.flush()
+        calls = sum(1 for _ in open(log))
     modes = os.environ["FAKE_MODES"].split(",")
     mode = modes[min(calls, len(modes)) - 1]
     out = lambda ev: (print(json.dumps(ev)), sys.stdout.flush())
@@ -29,7 +31,7 @@ FAKE = textwrap.dedent(f"""\
         os._exit(1)
     if mode == "hang":
         child = subprocess.Popen(["sleep", "300"])
-        open(os.environ["FAKE_LOG"] + ".child", "w").write(str(child.pid))
+        open(os.environ["FAKE_LOG"] + ".child", "a").write(f"{{child.pid}}\\n")
         time.sleep(300)
     if mode == "quota":
         out({{"type": "result", "is_error": True, "session_id": "s-1",
@@ -155,10 +157,12 @@ def test_timeout_kills_the_process_group(make_engine, fake):
     e.start("w", run_id="r")
     assert time.monotonic() - t0 < 60
     assert e.store.get_run("r").status == "failed"   # 3 timeouts = 3 attempts
-    child = int(open(str(log) + ".child").read())
+    children = [int(p) for p in open(str(log) + ".child").read().split()]
+    assert len(children) == 3
     time.sleep(0.2)
-    with pytest.raises(ProcessLookupError):
-        os.kill(child, 0)                           # the `sleep 300` grandchild died too
+    for child in children:
+        with pytest.raises(ProcessLookupError):
+            os.kill(child, 0)                       # every `sleep 300` grandchild died too
 
 
 @pytest.mark.parametrize("mode", ["noisy", "latin1"])
@@ -273,3 +277,21 @@ def test_a_session_that_hits_its_budget_waits_for_more(make_engine, fake):
     e.tick()
     assert e.store.get_run("r").status == "completed"
     assert calls()[1]["argv"][-2:] == ["--resume", "s-1"]
+
+
+def test_agents_in_parallel_keep_their_own_session_and_cost(make_engine, fake):
+    bin_, modes, calls, _ = fake
+    modes("ok")
+    e = make_engine()
+
+    @e.workflow("w")
+    def w(ctx):
+        return ctx.parallel(*[ctx.call(n, claude, ctx, f"review {n}", bin=bin_, validate=check)
+                              for n in ("style", "facts")])
+
+    e.start("w", run_id="r")
+    assert e.store.get_run("r").status == "completed"
+    steps = e.store.list_steps("r")
+    assert [s.cost_usd for s in steps] == [1.25, 1.25]
+    assert len({s.scratch["session_id"] for s in steps}) == 2
+    assert sorted(c["stdin"] for c in calls()) == ["review facts", "review style"]
