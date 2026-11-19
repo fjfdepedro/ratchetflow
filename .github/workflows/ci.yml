@@ -60,3 +60,7 @@ jobs:
           uv pip install --python /tmp/check dist/*.whl
           /tmp/check/bin/python -c "import ratchetflow, ratchetflow.agents; print(ratchetflow.__version__)"
           /tmp/check/bin/ratchet --help > /dev/null
+      - name: The sdist holds only the package, its tests and its docs
+        run: |
+          extra=$(tar tzf dist/*.tar.gz | cut -d/ -f2- | grep -vE '^(src/ratchetflow/|tests/|examples/demo\.py$|README\.md$|CHANGELOG\.md$|CONTRIBUTING\.md$|LICENSE$|PKG-INFO$|pyproject\.toml$|\.gitignore$|$)' || true)
+          if [ -n "$extra" ]; then echo "unexpected files in the sdist:"; echo "$extra"; exit 1; fi
