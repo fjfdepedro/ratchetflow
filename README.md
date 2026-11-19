@@ -113,7 +113,9 @@ Budget top-ups show up there too; runs waiting for an external event, such as CI
   validate, it retries in the same session asking for a fix;
 - caps the session with `--max-budget-usd` at what is left of the run's budget; if the session
   runs out, the run waits for `ratchet.budget` and then resumes the same session instead of
-  retrying and spending again;
+  retrying and spending again. The CLI checks the cap between turns, so a session can go past
+  it by up to one turn: a first turn with Sonnet already costs a few cents (0.09 $ with a
+  0.02 $ cap in one measurement);
 - with `expect_json=False`, `validate` gets the answer's text, for agents whose real output is
   the files they write (check them in `validate` and raise to retry in the same session);
 - adds `total_cost_usd` to the step's cost. An attempt cut off before the CLI reports its cost
@@ -128,8 +130,9 @@ Budget top-ups show up there too; runs waiting for an external event, such as CI
   already did it.
 - **Workflow versioning.** If you change the code with runs in flight, it warns (code hash) and
   fails if the step names no longer match. Nothing more.
-- **Budget inside a non-agent step.** The budget is checked before each step and passed to the
-  Claude session as a cap; a step that spends some other way can still go past it.
+- **A hard budget.** The budget is checked before each step and passed to the Claude session as
+  a cap that the CLI enforces between turns, so a run can end up one turn over it. A step that
+  spends some other way can go past it too.
 - **Spreading work across machines.** It is SQLite: one host, several processes.
 
 ## Development
