@@ -188,6 +188,31 @@ out = ctx.step("tests", codex, ctx, "Add tests for the parser; answer with a JSO
                cwd=repo, sandbox="workspace-write", validate=check_summary)
 ```
 
+## The Claude API adapter
+
+`ratchetflow.agents.anthropic_api` talks to the Messages API with your own tools, through the
+official SDK (`pip install "ratchetflow[anthropic]"`; the core keeps no dependencies). The
+conversation is the step's state:
+
+- it is stored after every answer and every round of tool results, so a crash costs at most the
+  call in flight. If the process dies while your tools run, only that round runs again, and the
+  answer that asked for them is not paid for twice: **tools that touch the world should be safe
+  to run twice**;
+- each answer's cost goes to the step as it arrives, at `PRICES` (cache writes included), and the
+  budget is checked before every call; when it runs out the run waits for `ratchet.budget` and
+  goes on with the same conversation;
+- an answer that does not validate goes back in the same conversation, asking for a fix;
+- 429 is retried after `retry-after` (a `Pause` past one minute), 5xx, 529 and network errors
+  are retried, and a spend limit, a refusal, `max_tokens` or another 4xx fail the run;
+- any other keyword (`thinking`, `output_config`, ...) goes to the request as is.
+
+```python
+from ratchetflow.agents import anthropic_api
+
+out = ctx.step("research", anthropic_api, ctx, "Find three sources on X; answer in JSON",
+               tools=[SEARCH_TOOL], handlers={"search": search}, validate=check_sources)
+```
+
 ## What ratchetflow does not do for you
 
 - **Idempotent external effects.** If the process dies after publishing and before storing the

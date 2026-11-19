@@ -30,10 +30,11 @@ uv run pytest -q
 | `src/ratchetflow/errors.py` | `Retryable`, `Fatal`, `Pause`, `NeedsHuman` and the engine's errors |
 | `src/ratchetflow/agents/claude.py` | Step that runs `claude -p` with session resume, quota, timeout, validation and cost estimates |
 | `src/ratchetflow/agents/codex.py` | Step that runs `codex exec --json` with thread resume, usage limits, validation and tokens |
+| `src/ratchetflow/agents/anthropic_api.py` | Step that runs a Messages API conversation with your tools (extra `anthropic`), stored turn by turn |
 | `src/ratchetflow/agents/_common.py` | What the adapters share: the child process and its JSON lines, prices, validation |
 | `src/ratchetflow/cli.py` | `ratchet runs/show/inbox/signal/export/retry/tick/start/systemd` |
 | `examples/demo.py` | Token-free flow with a question for a human |
 
 ## Ideas on the table
 
-- More adapters: Claude Agent SDK, the Anthropic API directly.
+- More adapters: the Claude Agent SDK.

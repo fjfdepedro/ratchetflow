@@ -23,6 +23,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+anthropic = ["anthropic>=2.10"]
+
 [project.urls]
 Homepage = "https://github.com/fjfdepedro/ratchetflow"
 Repository = "https://github.com/fjfdepedro/ratchetflow"
@@ -33,7 +36,10 @@ Changelog = "https://github.com/fjfdepedro/ratchetflow/blob/main/CHANGELOG.md"
 ratchet = "ratchetflow.cli:entry"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "anthropic>=2.10.0",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]
