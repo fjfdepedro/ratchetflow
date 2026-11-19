@@ -221,3 +221,48 @@ def test_show_separates_working_time_from_waiting(tmp_path, monkeypatch, capsys)
     capsys.readouterr()
     main(["--app", app, "show", "r"])
     assert "0s (+37m waiting)" in capsys.readouterr().out
+
+
+def test_systemd_prints_a_oneshot_service_and_its_timer(tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "my flows"                        # a space: ExecStart must quote it
+    folder.mkdir()
+    monkeypatch.chdir(folder)
+    monkeypatch.setenv("PATH", "/a:/b:/a")
+    app = write_app(folder, """
+        @engine.workflow("w")
+        def w(ctx):
+            return 1
+    """)
+    main(["--app", "flows.py:engine", "systemd", "--every", "30s"])
+    out = capsys.readouterr().out
+    assert "# ~/.config/systemd/user/ratchet-flows.service" in out
+    assert "Type=oneshot" in out and f"WorkingDirectory={folder}" in out
+    assert f'--app "{folder / "flows.py"}:engine" tick' in out    # absolute and quoted
+    assert 'Environment="PATH=/a:/b"' in out                       # duplicates dropped
+    assert "OnUnitInactiveSec=30s" in out and "WantedBy=timers.target" in out
+    assert app.endswith("flows.py:engine")
+
+
+def test_systemd_install_writes_the_units(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    write_app(tmp_path, """
+        @engine.workflow("w")
+        def w(ctx):
+            return 1
+    """)
+    main(["--app", "flows.py:engine", "systemd", "--name", "digest", "--install"])
+    units = tmp_path / "home/.config/systemd/user"
+    assert "tick" in (units / "digest.service").read_text()
+    assert "Unit" in (units / "digest.timer").read_text()
+    assert "systemctl --user daemon-reload && systemctl --user enable --now digest.timer" \
+        in capsys.readouterr().out
+
+
+def test_systemd_needs_an_app_that_loads(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RATCHET_APP", raising=False)
+    with pytest.raises(SystemExit):
+        main(["systemd"])
+    with pytest.raises(FileNotFoundError):
+        main(["--app", "missing.py:engine", "systemd"])

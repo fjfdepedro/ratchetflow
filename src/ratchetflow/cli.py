@@ -1,4 +1,4 @@
-"""CLI: `ratchet runs | show | inbox | signal | export | retry | tick | start`.
+"""CLI: `ratchet runs | show | inbox | signal | export | retry | tick | start | systemd`.
 
 `tick` and `start` need the workflows: `--app module:engine` or `--app file.py:engine` (or the
 RATCHET_APP variable). The other commands only read or write the database: the one of `--app`
@@ -127,6 +127,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     k = sub.add_parser("tick", help="resume whatever is due (for cron/systemd)")
     k.add_argument("--loop", type=float, metavar="SEC", help="repeat every SEC seconds")
 
+    sd = sub.add_parser("systemd", help="a systemd user timer that runs `tick` (Linux)")
+    sd.add_argument("--every", default="1min", help="pause between ticks (systemd time span)")
+    sd.add_argument("--name", help="unit name (default: ratchet-<app>)")
+    sd.add_argument("--install", action="store_true",
+                    help="write the units to ~/.config/systemd/user instead of printing them")
+
     st = sub.add_parser("start", help="start a workflow")
     st.add_argument("workflow")
     st.add_argument("input", nargs="?", default="null", help="JSON")
@@ -134,6 +140,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     st.add_argument("--budget", type=float, help="cap in USD")
 
     a = p.parse_args(argv)
+
+    if a.cmd == "systemd":
+        if not a.app:
+            p.error("`systemd` needs --app module:engine (or RATCHET_APP)")
+        _load_engine(a.app)   # fail here, not every minute in the journal
+        return _systemd(a.app, a.every, a.name, a.install)
 
     if a.cmd in ("tick", "start"):
         if not a.app:
@@ -229,6 +241,61 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("reopened" if store.reopen_failed(a.run_id) else "it was not failed")
         return 0
     return 1
+
+
+def _systemd(app: str, every: str, name: Optional[str], install: bool) -> int:
+    """A oneshot service running one `tick` and a timer that starts it again `every` after it
+    ends, so ticks never overlap. Paths are made absolute and PATH is the current one, so the
+    unit finds the same Python, app and `claude` as this shell."""
+    target, sep, attr = app.partition(":")
+    if target.endswith(".py"):
+        target = str(Path(target).resolve())
+        stem = Path(target).stem
+    else:
+        stem = target.rsplit(".", 1)[-1]
+    name = name or f"ratchet-{stem}"
+    cwd = os.getcwd()
+    path = ":".join(dict.fromkeys(p for p in os.environ.get("PATH", "/usr/bin:/bin").split(":") if p))
+    quote = lambda s: f'"{s}"' if " " in s else s  # noqa: E731
+    cmd = " ".join(quote(s) for s in (sys.executable, "-m", "ratchetflow.cli",
+                                      "--app", f"{target}{sep}{attr}", "tick"))
+    service = f"""[Unit]
+Description=ratchet tick for {target}
+
+[Service]
+Type=oneshot
+WorkingDirectory={cwd}
+Environment="PATH={path}"
+ExecStart={cmd}
+# SIGTERM reaches ratchet, which stops its agents and frees the lease; leave it time.
+TimeoutStopSec=120
+"""
+    timer = f"""[Unit]
+Description=Run {name}.service every {every}
+
+[Timer]
+OnActiveSec=0
+OnUnitInactiveSec={every}
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+"""
+    enable = f"systemctl --user daemon-reload && systemctl --user enable --now {name}.timer"
+    if not install:
+        print(f"# ~/.config/systemd/user/{name}.service\n{service}")
+        print(f"# ~/.config/systemd/user/{name}.timer\n{timer}")
+        print(f"# then: {enable}")
+        return 0
+    units = Path.home() / ".config/systemd/user"
+    units.mkdir(parents=True, exist_ok=True)
+    for ext, text in (("service", service), ("timer", timer)):
+        (units / f"{name}.{ext}").write_text(text)
+        print(f"wrote {units / f'{name}.{ext}'}")
+    print(f"now: {enable}")
+    print("to keep it running after you log out: loginctl enable-linger")
+    print(f"logs: journalctl --user -u {name}.service")
+    return 0
 
 
 def entry() -> int:

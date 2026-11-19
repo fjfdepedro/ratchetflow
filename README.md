@@ -59,12 +59,30 @@ ratchet --app flows.py:engine show article-42     # steps, attempts, cost and du
 ratchet --app flows.py:engine inbox               # runs waiting for you, and how to answer
 ratchet --app flows.py:engine signal article-42 outline.ok '{"decision": "go on"}'
 ratchet --app flows.py:engine signal article-42 ratchet.budget '{"add_usd": 5}'
-ratchet --app flows.py:engine tick --loop 60      # or a systemd timer every minute
+ratchet --app flows.py:engine tick --loop 60      # or a systemd timer (below)
 ratchet --app flows.py:engine export > steps.jsonl  # one line per step: cost, time, tokens
 ```
 
 `runs`, `show`, `signal` and `retry` can also take `--db path/to/runs.db` instead of `--app`.
 There is a token-free demo in [`examples/demo.py`](examples/demo.py).
+
+### Resume runs without a terminal open (Linux)
+
+`ratchet systemd` writes a user timer that runs `tick` again a minute after the last one ends,
+so ticks never overlap:
+
+```bash
+ratchet --app flows.py:engine systemd                 # prints the .service and .timer
+ratchet --app flows.py:engine systemd --install       # writes them to ~/.config/systemd/user
+systemctl --user daemon-reload && systemctl --user enable --now ratchet-flows.timer
+loginctl enable-linger                                # keep it running after you log out
+journalctl --user -u ratchet-flows.service            # what each tick did
+```
+
+The unit uses absolute paths, the current Python and the current `PATH` (so it finds `claude`).
+`--every 5min` changes the pause, `--name` the unit. Run it from the folder the app expects to
+run in: that becomes the unit's working directory. Stopping the unit sends SIGTERM, which
+stops the agents and frees the lease.
 
 ## How it works
 
