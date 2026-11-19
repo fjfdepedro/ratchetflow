@@ -83,7 +83,7 @@ There is a token-free demo in [`examples/demo.py`](examples/demo.py).
 | `Retryable` or any exception | retries with growing backoff, up to `retries` attempts |
 | `Fatal` | fails the run without retrying |
 | `Pause(until)` | parks the run until that time; the process moves on |
-| `NeedsHuman(event, reason, details=...)` | parks the run until `ratchet signal <run> <event>`; the payload lands in `ctx.scratch["signal"]` |
+| `NeedsHuman(event, reason, details=..., questions=[...])` | parks the run until `ratchet signal <run> <event>`; the payload lands in `ctx.scratch["signal"]` |
 
 An attempt that kills the whole process (OOM, segfault) counts too, so a step that brings the
 worker down fails after `retries` attempts instead of looping forever. A step that failed and
@@ -96,7 +96,9 @@ Also: `ctx.sleep(name, s)`, `ctx.wait_for_event(name, event, timeout_s)`,
 Starting a run again with the same `--id` neither duplicates it nor wakes it before its time.
 
 `ratchet inbox` lists the runs waiting for a person: the whole question, its `details` (whatever
-JSON the step passed so you can decide without digging) and the exact `ratchet signal` to answer.
+JSON the step passed so you can decide without digging), its open `questions`, numbered and
+apart (for example the doubts an agent left in its report, which would otherwise sit unseen in
+`details`), and the exact `ratchet signal` to answer.
 Budget top-ups show up there too; runs waiting for an external event, such as CI, do not. Add
 `--json` to feed it to a notifier.
 

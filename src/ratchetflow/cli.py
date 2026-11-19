@@ -174,6 +174,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                   f"  step: {item['step'] or '-'}")
             for line in item["question"].splitlines() or [""]:
                 print(f"  {line}")
+            if item["questions"]:
+                print("  open questions:")
+                for n, q in enumerate(item["questions"], 1):
+                    print(f"    {n}. " + q.replace("\n", "\n       "))
             if item["details"] is not None:
                 print("  details:")
                 for line in json.dumps(item["details"], ensure_ascii=False, indent=2).splitlines():

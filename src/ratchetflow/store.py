@@ -237,16 +237,17 @@ class Store:
             waiting = [s for s in self.list_steps(run.id) if s.status == "waiting"]
             step = waiting[-1] if waiting else None
             if run.wait_event == budget_event:
-                question, details = run.error or "budget used up", {
-                    "spent_usd": round(self.run_cost(run.id), 4), "budget_usd": run.budget_usd}
+                question, details, questions = run.error or "budget used up", {
+                    "spent_usd": round(self.run_cost(run.id), 4), "budget_usd": run.budget_usd}, []
             elif step is not None and step.scratch.get("waiting_event") == run.wait_event:
                 question = step.scratch.get("question") or run.error or ""
                 details = step.scratch.get("details")
+                questions = step.scratch.get("questions") or []
             else:
                 continue
             items.append({"run_id": run.id, "workflow": run.workflow, "event": run.wait_event,
                           "step": step.name if step else None, "question": question,
-                          "details": details, "since": run.updated_at})
+                          "questions": questions, "details": details, "since": run.updated_at})
         return items
 
     # --- steps ------------------------------------------------------------
