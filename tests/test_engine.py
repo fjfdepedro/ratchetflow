@@ -410,3 +410,56 @@ def test_the_heartbeat_survives_a_sqlite_error(make_engine):
 
     e.start("w", run_id="r")
     assert e.store.get_run("r").output is True
+
+
+def test_budget_left(make_engine):
+    e = make_engine()
+    seen = []
+
+    @e.workflow("w")
+    def w(ctx):
+        seen.append(ctx.budget_left())
+        ctx.step("x", lambda: ctx.record_cost(4.0))
+        seen.append(ctx.budget_left())
+
+    e.start("w", run_id="r", budget_usd=6)
+    e.start("w", run_id="nobudget")
+    assert seen == [6, 2, None, None]
+
+
+def test_the_inbox_lists_only_runs_waiting_for_a_person(make_engine):
+    e = make_engine()
+    long_question = "Approve the outline? " + "It covers a lot of ground. " * 20
+
+    @e.workflow("human")
+    def human(ctx):
+        def approval():
+            if ctx.scratch.get("signal") is None:
+                raise NeedsHuman("outline.ok", long_question, details={"sections": ["intro", "body"]})
+            return "approved"
+        return ctx.step("approval", approval)
+
+    @e.workflow("external")
+    def external(ctx):
+        return ctx.wait_for_event("ci", "ci.passed")
+
+    @e.workflow("money")
+    def money(ctx):
+        ctx.step("a", lambda: ctx.record_cost(5))
+        ctx.step("b", lambda: 1)
+
+    e.start("human", run_id="h")
+    e.start("external", run_id="x")
+    e.start("money", run_id="m", budget_usd=1)
+
+    inbox = {item["run_id"]: item for item in e.store.inbox(BUDGET_EVENT)}
+    assert set(inbox) == {"h", "m"}                       # waiting on CI is not a person's job
+    assert inbox["h"]["event"] == "outline.ok"
+    assert inbox["h"]["step"] == "approval"
+    assert inbox["h"]["question"] == long_question        # whole, not cut
+    assert inbox["h"]["details"] == {"sections": ["intro", "body"]}
+    assert inbox["m"]["event"] == BUDGET_EVENT and "budget" in inbox["m"]["question"]
+
+    e.signal("h", "outline.ok", {})
+    e.tick()
+    assert "h" not in {item["run_id"] for item in e.store.inbox(BUDGET_EVENT)}

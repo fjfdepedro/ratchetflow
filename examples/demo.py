@@ -1,7 +1,7 @@
 """Token-free demo: a flow with steps, a question for a human and a wait.
 
     ratchet --app examples/demo.py:engine start demo '"Durable execution"' --id a1
-    ratchet --app examples/demo.py:engine show a1
+    ratchet --app examples/demo.py:engine inbox          # what is waiting for you
     ratchet --app examples/demo.py:engine signal a1 outline.ok '{"decision": "go on"}'
     ratchet --app examples/demo.py:engine tick
 """
@@ -20,7 +20,7 @@ def demo(ctx, topic):
     def approval():
         answer = ctx.scratch.get("signal")
         if answer is None:
-            raise NeedsHuman("outline.ok", "go on with this outline?")
+            raise NeedsHuman("outline.ok", "go on with this outline?", details=outline)
         return answer
 
     decision = ctx.step("approval", approval)

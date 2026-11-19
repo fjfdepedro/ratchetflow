@@ -11,6 +11,7 @@ from datetime import datetime
 import pytest
 
 from ratchetflow.agents import claude
+from ratchetflow.engine import BUDGET_EVENT
 from ratchetflow.agents.claude import _reset_time, estimate_cost
 
 FAKE = textwrap.dedent(f"""\
@@ -33,6 +34,10 @@ FAKE = textwrap.dedent(f"""\
     if mode == "quota":
         out({{"type": "result", "is_error": True, "session_id": "s-1",
              "result": "You've hit your session limit · resets 1:30pm"}})
+        sys.exit(1)
+    if mode == "overbudget":
+        out({{"type": "result", "is_error": True, "subtype": "error_max_budget_usd",
+             "result": None, "total_cost_usd": 0.5}})
         sys.exit(1)
     if mode == "partial":
         msg = {{"id": "m1", "model": "claude-opus-5-5", "usage": {{
@@ -210,3 +215,52 @@ def test_the_estimate_matches_what_the_cli_reported():
 def test_an_unknown_model_is_priced_at_the_top():
     usage = {"input_tokens": 1_000_000}
     assert estimate_cost(usage, "claude-future-9") == estimate_cost(usage, "claude-fable-5-1")
+
+
+def test_text_output_goes_to_validate_as_text(make_engine, fake):
+    bin_, modes, _, _ = fake
+    modes("ok")
+    e = make_engine()
+
+    def wrote_it(text):
+        assert text.startswith("Done.")
+        return {"checked": True}
+
+    @e.workflow("w")
+    def w(ctx):
+        return ctx.step("write", claude, ctx, "write the files", bin=bin_,
+                        validate=wrote_it, expect_json=False)
+
+    e.start("w", run_id="r")
+    run = e.store.get_run("r")
+    assert run.status == "completed" and run.output["data"] == {"checked": True}
+
+
+def test_the_session_is_capped_at_the_budget_left(make_engine, fake):
+    bin_, modes, calls, _ = fake
+    modes("ok")
+    e = make_engine()
+
+    @e.workflow("w")
+    def w(ctx):
+        ctx.step("before", lambda: ctx.record_cost(1.5))
+        return ctx.step("plan", claude, ctx, "make the plan", bin=bin_, validate=check)
+
+    e.start("w", run_id="r", budget_usd=5)
+    argv = calls()[0]["argv"]
+    assert float(argv[argv.index("--max-budget-usd") + 1]) == pytest.approx(3.5)
+
+
+def test_a_session_that_hits_its_budget_waits_for_more(make_engine, fake):
+    bin_, modes, calls, _ = fake
+    modes("overbudget", "ok")
+    e = make_engine()
+    flow(e, bin_)
+    e.start("w", run_id="r", budget_usd=10)
+    run = e.store.get_run("r")
+    assert run.status == "waiting" and run.wait_event == BUDGET_EVENT
+    assert len(calls()) == 1                       # no retry burning money
+    e.signal("r", BUDGET_EVENT, {"add_usd": 5})
+    e.tick()
+    assert e.store.get_run("r").status == "completed"
+    assert calls()[1]["argv"][-2:] == ["--resume", "s-1"]

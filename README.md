@@ -36,7 +36,7 @@ def write_article(ctx, brief):
     def approval():
         answer = ctx.scratch.get("signal")         # the human's answer, if there was one
         if answer is None:
-            raise NeedsHuman("outline.ok", f"approve the outline: {outline['data']['title']}")
+            raise NeedsHuman("outline.ok", "approve the outline?", details=outline["data"])
         return answer
 
     ctx.step("approval", approval)
@@ -56,6 +56,7 @@ def write_article(ctx, brief):
 ratchet --app flows.py:engine start write-article '{"topic": "...", "folder": "..."}' --id article-42 --budget 10
 ratchet --app flows.py:engine runs                # state of every run
 ratchet --app flows.py:engine show article-42     # steps, attempts, cost and duration
+ratchet --app flows.py:engine inbox               # runs waiting for you, and how to answer
 ratchet --app flows.py:engine signal article-42 outline.ok '{"decision": "go on"}'
 ratchet --app flows.py:engine signal article-42 ratchet.budget '{"add_usd": 5}'
 ratchet --app flows.py:engine tick --loop 60      # or a systemd timer every minute
@@ -82,7 +83,7 @@ There is a token-free demo in [`examples/demo.py`](examples/demo.py).
 | `Retryable` or any exception | retries with growing backoff, up to `retries` attempts |
 | `Fatal` | fails the run without retrying |
 | `Pause(until)` | parks the run until that time; the process moves on |
-| `NeedsHuman(event)` | parks the run until `ratchet signal <run> <event>`; the payload lands in `ctx.scratch["signal"]` |
+| `NeedsHuman(event, reason, details=...)` | parks the run until `ratchet signal <run> <event>`; the payload lands in `ctx.scratch["signal"]` |
 
 An attempt that kills the whole process (OOM, segfault) counts too, so a step that brings the
 worker down fails after `retries` attempts instead of looping forever. A step that failed and
@@ -93,6 +94,11 @@ Also: `ctx.sleep(name, s)`, `ctx.wait_for_event(name, event, timeout_s)`,
 `ratchet.budget`) and `ctx.save_scratch(...)` for a step's intermediate state.
 
 Starting a run again with the same `--id` neither duplicates it nor wakes it before its time.
+
+`ratchet inbox` lists the runs waiting for a person: the whole question, its `details` (whatever
+JSON the step passed so you can decide without digging) and the exact `ratchet signal` to answer.
+Budget top-ups show up there too; runs waiting for an external event, such as CI, do not. Add
+`--json` to feed it to a notifier.
 
 ## The Claude Code adapter
 
@@ -105,6 +111,11 @@ Starting a run again with the same `--id` neither duplicates it nor wakes it bef
 - SIGTERM or SIGHUP to `ratchet tick`/`start` also kills the agent and releases the lease;
 - extracts the last ```` ```json ```` block and passes it through `validate`; if it does not
   validate, it retries in the same session asking for a fix;
+- caps the session with `--max-budget-usd` at what is left of the run's budget; if the session
+  runs out, the run waits for `ratchet.budget` and then resumes the same session instead of
+  retrying and spending again;
+- with `expect_json=False`, `validate` gets the answer's text, for agents whose real output is
+  the files they write (check them in `validate` and raise to retry in the same session);
 - adds `total_cost_usd` to the step's cost. An attempt cut off before the CLI reports its cost
   (timeout, kill, crash) is billed from the token usage streamed so far, at the prices in
   `ratchetflow.agents.claude.PRICES` (override with `prices=`). It is a lower bound: the stream
@@ -117,7 +128,8 @@ Starting a run again with the same `--id` neither duplicates it nor wakes it bef
   already did it.
 - **Workflow versioning.** If you change the code with runs in flight, it warns (code hash) and
   fails if the step names no longer match. Nothing more.
-- **Budget inside a step.** The budget is checked before each step: one long step can go past it.
+- **Budget inside a non-agent step.** The budget is checked before each step and passed to the
+  Claude session as a cap; a step that spends some other way can still go past it.
 - **Spreading work across machines.** It is SQLite: one host, several processes.
 
 ## Development

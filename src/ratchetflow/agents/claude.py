@@ -33,7 +33,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from ..errors import Fatal, Pause, Retryable
+from ..engine import BUDGET_EVENT
+from ..errors import Fatal, NeedsHuman, Pause, Retryable
 
 DEFAULT_RESUME_PROMPT = (
     "The previous session was cut off or its output was not valid. Before going on, check the "
@@ -72,7 +73,15 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
            extra_args: Sequence[str] = (), bin: str = "claude",
            resume_prompt: str = DEFAULT_RESUME_PROMPT,
            env: Optional[dict] = None, now: Callable[[], datetime] = datetime.now,
-           prices: Optional[dict[str, tuple[float, float, float]]] = None) -> dict:
+           prices: Optional[dict[str, tuple[float, float, float]]] = None,
+           expect_json: bool = True, max_budget_usd: Optional[float] = None) -> dict:
+    """Runs one `claude -p` session as a step and returns its text, data, session and cost.
+
+    `validate` receives the JSON extracted from the answer, or with `expect_json=False` the
+    answer's raw text (useful when the agent's real output is files it wrote). Whatever it
+    returns becomes `data`. `max_budget_usd` caps the session; by default it is what is left of
+    the run's budget, so one long step cannot run far past it.
+    """
     scratch = ctx.scratch
     # A previous attempt died with the whole process: bill what it had spent before going on.
     _bill_unbilled(ctx, scratch.get("unbilled_usd"))
@@ -82,6 +91,10 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
         cmd += ["--model", model]
     if max_turns:
         cmd += ["--max-turns", str(max_turns)]
+    if max_budget_usd is None and hasattr(ctx, "budget_left"):
+        max_budget_usd = ctx.budget_left()
+    if max_budget_usd is not None:
+        cmd += ["--max-budget-usd", f"{max(max_budget_usd, 0.01):.4f}"]
     if session_id:
         cmd += ["--resume", session_id]
         stdin_text = resume_prompt.format(error=scratch.get("last_error") or "none")
@@ -111,7 +124,7 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
         _raise_for_error(ctx, text, result, now)
 
     try:
-        data = _extract_json(text) if validate else None
+        data = (_extract_json(text) if expect_json else text) if validate else None
         if validate:
             data = validate(data)
             json.dumps(data)  # whatever validates must be storable
@@ -129,6 +142,9 @@ def _raise_for_error(ctx: Any, text: str, result: dict, now: Callable[[], dateti
         raise Pause(_reset_time(text, now()), reason=f"quota used up: {text[:120]}")
     if _OVERLOAD.search(text):
         raise Retryable(text[:200])
+    if result.get("subtype") == "error_max_budget_usd":
+        # Retrying would spend again: wait for `ratchet signal <run> ratchet.budget`, then resume.
+        raise NeedsHuman(BUDGET_EVENT, "the session used up its budget")
     if result.get("subtype") == "error_max_turns":
         raise Fatal("the session ran out of --max-turns")
     raise Retryable(text[:200] or "error without text")

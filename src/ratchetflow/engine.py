@@ -181,6 +181,13 @@ class Context:
             raise RuntimeError("record_cost only inside a ctx.step")
         self._store.add_cost(self.run_id, self._current.seq, usd)
 
+    def budget_left(self) -> Optional[float]:
+        """USD left in the run's budget (pending top-ups included), or None without a budget."""
+        if self._budget is None:
+            return None
+        self._budget = self._store.absorb_budget_events(self.run_id, BUDGET_EVENT)
+        return self._budget - self._store.run_cost(self.run_id)
+
     @property
     def scratch(self) -> dict:
         """Intermediate state of the current step (e.g. an agent's session_id)."""
@@ -254,7 +261,8 @@ class Context:
         assert isinstance(e, NeedsHuman)
         step = self._store.get_step(self.run_id, seq)
         assert step is not None
-        self._write(seq, scratch={**step.scratch, "waiting_event": e.event})
+        self._write(seq, scratch={**step.scratch, "waiting_event": e.event, "question": str(e),
+                                  "details": _jsonable(e.details, f"details of {e.event!r}")})
         raise _SuspendWith(_Suspension(event=e.event, reason=str(e)))
 
     def _fail_step(self, seq: int, attempts: int, error: str) -> None:
