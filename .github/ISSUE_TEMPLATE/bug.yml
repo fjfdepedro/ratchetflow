@@ -1,0 +1,32 @@
+name: Bug
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: The smallest workflow that shows it, and the commands you ran.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: show
+    attributes:
+      label: Output of `ratchet show <run>`
+      description: Remove anything private first.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: ratchetflow, Python, OS, and the agent CLI or SDK if one is involved.
+      placeholder: ratchetflow 0.2.0, Python 3.12, Ubuntu 24.04, claude 2.x
+    validations:
+      required: true
