@@ -9,7 +9,7 @@ need small changes; the [changelog](CHANGELOG.md) says which.
 
 Please do not open a public issue. Use GitHub's private reporting instead:
 [Report a vulnerability](https://github.com/fjfdepedro/ratchetflow/security/advisories/new).
-Expect a first answer within a week.
+Expect a first answer within a month.
 
 ## What is in scope
 
