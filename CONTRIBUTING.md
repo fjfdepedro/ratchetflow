@@ -5,19 +5,26 @@ Thanks for taking a look. ratchetflow is small on purpose; these rules keep it t
 ## Setup
 
 ```bash
-uv sync
+uv sync --group agent-sdk              # without it, the Agent SDK tests are skipped
 uv run pytest -q
 uv run ruff check src tests examples   # CI fails on any finding
 uv run mypy                            # and on any type error
 uv run pytest -q --cov                 # and under 90% branch coverage
 ```
 
+The Agent SDK is about 350 MB. Without it, everything else works, but coverage drops below the
+floor.
+
+What each guarantee rests on is in [docs/design.md](docs/design.md). A change that alters one
+updates that page too.
+
 ## Ground rules
 
 - **No dependencies in the core** (`src/ratchetflow/`). An adapter that needs a library goes in an
   optional extra.
-- **Tests spend no tokens.** The Claude adapter is tested against a fake CLI
-  (`tests/test_claude_agent.py`). Anything that depends on time goes through the `Clock` in
+- **Tests spend no tokens.** Each adapter is tested against a fake: a fake `claude` and
+  `codex` CLI, a fake API client, a fake SDK `query`. When a real session shows the fake was
+  wrong, the fake is fixed to match it. Anything that depends on time goes through the `Clock` in
   `tests/conftest.py`, so tests never sleep for real waits.
 - **A new test must fail first.** Break the code on purpose, watch the test fail, then restore
   it. A test that never failed proves nothing.
@@ -38,3 +45,16 @@ uv run pytest -q --cov                 # and under 90% branch coverage
 | `src/ratchetflow/agents/_common.py` | What the adapters share: the child process and its JSON lines, prices, validation |
 | `src/ratchetflow/cli.py` | `ratchet runs/show/inbox/signal/export/retry/tick/start/systemd` |
 | `examples/demo.py` | Token-free flow with a question for a human |
+| `examples/article.py` | A real flow: agents, two human gates, parallel reviews, an idempotent publish |
+| `docs/design.md` | The guarantees: what a crash costs at each point, leases, waits, budget |
+| `.github/workflows/ci.yml` | Tests (3.11-3.13 Linux, 3.13 macOS), lint and types, coverage, the demo, the wheel |
+| `.github/workflows/publish.yml` | A GitHub release `vX.Y.Z` runs the tests and uploads to PyPI |
+
+## Releasing
+
+1. In a PR: set the version in `pyproject.toml` and `src/ratchetflow/__init__.py`, run
+   `uv lock`, and turn `[Unreleased]` in the changelog into `[X.Y.Z] - date`, with its compare
+   link.
+2. Once it is merged, create the GitHub release `vX.Y.Z` from `main`, with that changelog
+   section as its notes. `publish.yml` checks that the tag matches the version, runs the tests,
+   and uploads to PyPI through trusted publishing. Nothing is uploaded by hand.

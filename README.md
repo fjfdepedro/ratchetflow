@@ -9,8 +9,8 @@ more.**
 A Python library with no dependencies, built on SQLite. No server: the state lives in one file,
 and a `ratchet tick` (cron or systemd) resumes whatever is due.
 
-> **Status: alpha.** It works and is tested, including against the real `claude` CLI, but the
-> API may still change before 1.0. Feedback and issues are welcome.
+> **Status: alpha.** It works and is tested. It has run against the real `claude` and `codex`
+> CLIs and the Agent SDK. The API may still change before 1.0. Feedback and issues are welcome.
 
 Requires Python 3.11+ on Linux or macOS (the agent adapter relies on POSIX process groups).
 
@@ -259,12 +259,13 @@ out = ctx.step("review", claude_sdk, ctx, "Review the draft; answer in JSON",
 ## Development
 
 ```bash
-uv sync && uv run pytest -q
-uv sync --group agent-sdk && uv run pytest -q tests/test_claude_sdk_agent.py  # its own job
+uv sync --group agent-sdk && uv run pytest -q
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules and [CHANGELOG.md](CHANGELOG.md) for
-what changed.
+CI also runs ruff, mypy and branch coverage, with a floor of 90%.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the commands and the ground rules.
+[docs/design.md](docs/design.md) has the guarantees, and [CHANGELOG.md](CHANGELOG.md) what
+changed. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 

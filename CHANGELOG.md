@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `docs/design.md`: the guarantees. What a crash at each point of a step costs, leases and
+  fencing, waits and events, the soft budget, the determinism checks, and why SQLite.
+- `examples/article.py`: a real flow. Agents with validators, two human gates with details and
+  open questions, parallel reviews, `ctx.now` for the file name, and an idempotent publish.
+- `SECURITY.md`, with private vulnerability reporting, and issue forms for bugs and ideas.
+
+### Changed
+
+- CI lints with ruff, type-checks `src` with mypy and measures branch coverage, failing under
+  90%. The code moved to `X | None` and `collections.abc` imports; no behaviour changed.
+
+### Fixed
+
+- The README still said the package was not on PyPI.
+- A test of SIGTERM in `ctx.parallel` failed now and then on a busy runner.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
