@@ -15,8 +15,7 @@ and a `ratchet tick` (cron or systemd) resumes whatever is due.
 Requires Python 3.11+ on Linux or macOS (the agent adapter relies on POSIX process groups).
 
 ```bash
-# not on PyPI yet; from a clone:
-uv pip install -e .        # import ratchetflow; the CLI is called `ratchet`
+pip install ratchetflow    # import ratchetflow; the CLI is called `ratchet`
 ```
 
 ## In 30 lines
@@ -85,6 +84,9 @@ run in: that becomes the unit's working directory. Stopping the unit sends SIGTE
 stops the agents and frees the lease.
 
 ## How it works
+
+What each guarantee rests on, and what a crash at each point costs:
+[docs/design.md](https://github.com/fjfdepedro/ratchetflow/blob/main/docs/design.md).
 
 - A workflow is a plain function. Anything with side effects or that is not deterministic goes
   inside `ctx.step(name, fn, *args)`.
