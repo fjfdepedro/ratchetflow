@@ -70,6 +70,14 @@ def test_sigterm_kills_the_agent_and_releases_the_lease(tmp_path):
     assert run.owner is None and run.lease_until is None   # can be resumed right away
 
 
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def test_sigterm_kills_every_agent_of_a_parallel_step(tmp_path):
     bin_ = tmp_path / "claude-fake"
     bin_.write_text(FAKE)
@@ -94,8 +102,10 @@ def test_sigterm_kills_every_agent_of_a_parallel_step(tmp_path):
     assert len(children) == 2                              # both agents were running at once
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(timeout=60) == 130
-    time.sleep(0.2)
-    for child in children:
+    for child in children:  # killed, but reaping by init can lag on a busy runner
+        end = time.monotonic() + 5
+        while _alive(child) and time.monotonic() < end:
+            time.sleep(0.05)
         with pytest.raises(ProcessLookupError):
             os.kill(child, 0)
     run = Store(tmp_path / "flows.db").get_run("r")
