@@ -1,0 +1,16 @@
+name: Idea
+description: Something ratchetflow could do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and where ratchetflow got in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: Keep in mind that the core has no dependencies, and stays that way.
