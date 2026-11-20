@@ -17,10 +17,9 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from .engine import BUDGET_EVENT, Engine
-from .store import Store
+from .store import RunRow, StepRow, Store
 
 
 def _load_engine(spec: str) -> Engine:
@@ -58,7 +57,7 @@ def _span(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def _duration(step) -> str:
+def _duration(step: StepRow) -> str:
     """Working time, plus how long the step waited (for a person, a pause or a retry)."""
     if not step.finished_at:
         return "..."
@@ -69,11 +68,11 @@ def _duration(step) -> str:
     return _span(step.busy_s) + (f" (+{_span(waited)} waiting)" if waited >= 1 else "")
 
 
-def _iso(ts: Optional[float]) -> Optional[str]:
+def _iso(ts: float | None) -> str | None:
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds") if ts else None
 
 
-def _export_row(run, step) -> dict:
+def _export_row(run: RunRow, step: StepRow) -> dict:
     """One step, flat enough for pandas or DuckDB. Agent steps add what the session used."""
     wall = step.finished_at - step.started_at if step.finished_at else None
     row = {"run_id": run.id, "workflow": run.workflow, "run_status": run.status,
@@ -90,11 +89,11 @@ def _export_row(run, step) -> dict:
     return row
 
 
-def _fmt_t(ts: Optional[float]) -> str:
+def _fmt_t(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S") if ts else "-"
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="ratchet", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--db", default=os.environ.get("RATCHET_DB"))
@@ -186,7 +185,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not run:
             raise SystemExit(f"no run {a.run_id}")
         budget = f" / {run.budget_usd:.2f}" if run.budget_usd is not None else ""
-        print(f"{run.id}  {run.workflow}  {run.status}  cost {store.run_cost(run.id):.2f}{budget} USD")
+        cost = store.run_cost(run.id)
+        print(f"{run.id}  {run.workflow}  {run.status}  cost {cost:.2f}{budget} USD")
         if run.error:
             # A waiting run's reason is a question for someone: show it whole. A failure's is a
             # traceback: its first line says enough.
@@ -243,7 +243,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     return 1
 
 
-def _systemd(app: str, every: str, name: Optional[str], install: bool) -> int:
+def _systemd(app: str, every: str, name: str | None, install: bool) -> int:
     """A oneshot service running one `tick` and a timer that starts it again `every` after it
     ends, so ticks never overlap. Paths are made absolute and PATH is the current one, so the
     unit finds the same Python, app and `claude` as this shell."""
@@ -255,7 +255,8 @@ def _systemd(app: str, every: str, name: Optional[str], install: bool) -> int:
         stem = target.rsplit(".", 1)[-1]
     name = name or f"ratchet-{stem}"
     cwd = os.getcwd()
-    path = ":".join(dict.fromkeys(p for p in os.environ.get("PATH", "/usr/bin:/bin").split(":") if p))
+    dirs = os.environ.get("PATH", "/usr/bin:/bin").split(":")
+    path = ":".join(dict.fromkeys(p for p in dirs if p))
     quote = lambda s: f'"{s}"' if " " in s else s  # noqa: E731
     cmd = " ".join(quote(s) for s in (sys.executable, "-m", "ratchetflow.cli",
                                       "--app", f"{target}{sep}{attr}", "tick"))

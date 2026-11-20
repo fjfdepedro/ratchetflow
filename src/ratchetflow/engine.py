@@ -20,10 +20,11 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, NoReturn
 
 from .errors import (
     Fatal,
@@ -33,15 +34,15 @@ from .errors import (
     StepFailed,
     _Suspend,
 )
-from .store import RunRow, Store, StepRow
+from .store import RunRow, StepRow, Store
 
 BUDGET_EVENT = "ratchet.budget"
 
 
 @dataclass
 class _Suspension:
-    wake_at: Optional[float] = None
-    event: Optional[str] = None
+    wake_at: float | None = None
+    event: str | None = None
     reason: str = ""
     lost_lease: bool = False
 
@@ -85,7 +86,7 @@ class Workflow:
 class Context:
     """What the workflow sees. One `Context` per execution (not per run)."""
 
-    def __init__(self, engine: "Engine", run: RunRow):
+    def __init__(self, engine: Engine, run: RunRow):
         self._engine = engine
         self._store = engine.store
         self.run_id = run.id
@@ -105,11 +106,11 @@ class Context:
         return self._cancel.is_set()
 
     @property
-    def _current(self) -> Optional[StepRow]:
+    def _current(self) -> StepRow | None:
         return getattr(self._local, "row", None)
 
     @_current.setter
-    def _current(self, row: Optional[StepRow]) -> None:
+    def _current(self, row: StepRow | None) -> None:
         self._local.row = row
 
     # --- public API -------------------------------------------------------
@@ -137,11 +138,11 @@ class Context:
         return self._run_step(seq, name, fn, args, kwargs, retries, backoff_s, max_backoff_s)
 
     def call(self, name: str, fn: Callable[..., Any], *args: Any, retries: int = 3,
-             backoff_s: float = 2.0, max_backoff_s: float = 300.0, **kwargs: Any) -> "Call":
+             backoff_s: float = 2.0, max_backoff_s: float = 300.0, **kwargs: Any) -> Call:
         """A step to hand to `ctx.parallel`; on its own it does nothing."""
         return Call(name, fn, args, kwargs, retries, backoff_s, max_backoff_s)
 
-    def parallel(self, *calls: "Call") -> list[Any]:
+    def parallel(self, *calls: Call) -> list[Any]:
         """Runs several steps at once, each in its own thread, and returns their outputs in order.
 
         Each one is an ordinary step (name, retries, cost, scratch), so `claude(ctx, ...)` works
@@ -153,14 +154,14 @@ class Context:
         """
         if not calls or not all(isinstance(c, Call) for c in calls):
             raise TypeError("ctx.parallel takes ctx.call(...) items")
-        slots: list[tuple[int, Optional[StepRow], Call]] = []
+        slots: list[tuple[int, StepRow | None, Call]] = []
         for c in calls:
             seq, row = self._enter(c.name)
             slots.append((seq, row, c))
         results: list[Any] = [None] * len(calls)
-        errors: list[Optional[BaseException]] = [None] * len(calls)
+        errors: list[BaseException | None] = [None] * len(calls)
         todo = []
-        for i, (seq, row, c) in enumerate(slots):
+        for i, (_seq, row, c) in enumerate(slots):
             if row is not None and row.status == "done":
                 results[i] = row.output
             elif row is not None and row.status == "failed":
@@ -282,7 +283,7 @@ class Context:
         self._write(seq, status="done", output=value, finished_at=self._engine.now())
         return value
 
-    def wait_for_event(self, name: str, event: str, timeout_s: Optional[float] = None) -> Any:
+    def wait_for_event(self, name: str, event: str, timeout_s: float | None = None) -> Any:
         """Waits for `ratchet signal <run> <event>`. Returns the payload, or None on timeout."""
         seq, row = self._enter(name)
         if row is not None and row.status == "done":
@@ -298,7 +299,8 @@ class Context:
             self._write(seq, status="done", output=None, finished_at=now)
             return None
         self._write(seq, status="waiting")
-        raise _SuspendWith(_Suspension(wake_at=deadline, event=event, reason=f"waiting for {event}"))
+        raise _SuspendWith(_Suspension(wake_at=deadline, event=event,
+                                       reason=f"waiting for {event}"))
 
     def record_cost(self, usd: float) -> None:
         """Adds cost to the current step. Counts towards the run's budget."""
@@ -306,7 +308,7 @@ class Context:
             raise RuntimeError("record_cost only inside a ctx.step")
         self._store.add_cost(self.run_id, self._current.seq, usd)
 
-    def budget_left(self) -> Optional[float]:
+    def budget_left(self) -> float | None:
         """USD left in the run's budget (pending top-ups included), or None without a budget."""
         if self._budget is None:
             return None
@@ -342,7 +344,7 @@ class Context:
             raise _lost_lease()
         return row
 
-    def _enter(self, name: str) -> tuple[int, Optional[StepRow]]:
+    def _enter(self, name: str) -> tuple[int, StepRow | None]:
         if name in self._names:
             raise ValueError(f"step name repeated in the same run: {name!r}"
                              " (use names like 'review-{i}')")
@@ -379,7 +381,7 @@ class Context:
             scratch["signal"] = payload
         self._write(row.seq, scratch=scratch)
 
-    def _suspend_from(self, seq: int, e: Exception) -> None:
+    def _suspend_from(self, seq: int, e: Exception) -> NoReturn:
         self._write(seq, status="waiting", error=_short(e))
         if isinstance(e, Pause):
             raise _SuspendWith(_Suspension(wake_at=e.until.timestamp(), reason=str(e)))
@@ -397,7 +399,7 @@ class Context:
 
 
 class Engine:
-    def __init__(self, db: str | Path = "ratchet.db", *, owner: Optional[str] = None,
+    def __init__(self, db: str | Path = "ratchet.db", *, owner: str | None = None,
                  lease_ttl_s: float = 300, heartbeat_s: float = 60,
                  clock: Callable[[], float] = time.time,
                  sleeper: Callable[[float], None] = time.sleep,
@@ -414,7 +416,7 @@ class Engine:
 
     # --- registration -----------------------------------------------------
 
-    def workflow(self, name: Optional[str] = None) -> Callable[[Callable], Callable]:
+    def workflow(self, name: str | None = None) -> Callable[[Callable], Callable]:
         def deco(fn: Callable) -> Callable:
             wf = Workflow(name or fn.__name__, fn)
             self.workflows[wf.name] = wf
@@ -423,8 +425,8 @@ class Engine:
 
     # --- lifecycle --------------------------------------------------------
 
-    def start(self, workflow: str, input: Any = None, *, run_id: Optional[str] = None,
-              budget_usd: Optional[float] = None, execute: bool = True) -> str:
+    def start(self, workflow: str, input: Any = None, *, run_id: str | None = None,
+              budget_usd: float | None = None, execute: bool = True) -> str:
         """Creates a run and executes it. With `run_id` it is idempotent: an existing run is
         neither duplicated nor woken up early."""
         wf = self._wf(workflow)

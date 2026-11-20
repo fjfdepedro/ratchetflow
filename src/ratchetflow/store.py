@@ -9,10 +9,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -78,14 +79,14 @@ class RunRow:
     workflow: str
     input: Any
     status: str
-    wake_at: Optional[float]
-    wait_event: Optional[str]
-    owner: Optional[str]
-    lease_until: Optional[float]
-    code_hash: Optional[str]
-    budget_usd: Optional[float]
+    wake_at: float | None
+    wait_event: str | None
+    owner: str | None
+    lease_until: float | None
+    code_hash: str | None
+    budget_usd: float | None
     output: Any
-    error: Optional[str]
+    error: str | None
     created_at: float
     updated_at: float
 
@@ -98,15 +99,15 @@ class StepRow:
     status: str
     attempts: int
     output: Any
-    error: Optional[str]
+    error: str | None
     scratch: dict
     cost_usd: float
     started_at: float
-    finished_at: Optional[float]
-    busy_s: Optional[float] = None   # None: written before 0.2.0
+    finished_at: float | None
+    busy_s: float | None = None   # None: written before 0.2.0
 
 
-def _loads(s: Optional[str]) -> Any:
+def _loads(s: str | None) -> Any:
     return None if s is None else json.loads(s)
 
 
@@ -158,18 +159,18 @@ class Store:
     # --- runs -------------------------------------------------------------
 
     def insert_run(self, run_id: str, workflow: str, input_: Any, code_hash: str,
-                   budget_usd: Optional[float], now: float) -> None:
+                   budget_usd: float | None, now: float) -> None:
         self.x(
             "INSERT INTO runs (id, workflow, input_json, status, code_hash, budget_usd,"
             " created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
             (run_id, workflow, json.dumps(input_), code_hash, budget_usd, now, now),
         )
 
-    def get_run(self, run_id: str) -> Optional[RunRow]:
+    def get_run(self, run_id: str) -> RunRow | None:
         rows = self.q("SELECT * FROM runs WHERE id = ?", (run_id,))
         return self._run(rows[0]) if rows else None
 
-    def list_runs(self, status: Optional[str] = None, limit: int = 50) -> list[RunRow]:
+    def list_runs(self, status: str | None = None, limit: int = 50) -> list[RunRow]:
         if status:
             rows = self.q("SELECT * FROM runs WHERE status = ? ORDER BY created_at DESC LIMIT ?",
                           (status, limit))
@@ -197,8 +198,8 @@ class Store:
                (run_id, owner))
 
     def finish_run(self, run_id: str, owner: str, status: str, now: float, *,
-                   output: Any = None, error: Optional[str] = None,
-                   wake_at: Optional[float] = None, wait_event: Optional[str] = None) -> None:
+                   output: Any = None, error: str | None = None,
+                   wake_at: float | None = None, wait_event: str | None = None) -> None:
         self.x(
             "UPDATE runs SET status = ?, output_json = ?, error = ?, wake_at = ?, wait_event = ?,"
             " owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND owner = ?",
@@ -207,7 +208,7 @@ class Store:
         )
 
     def reopen_failed(self, run_id: str) -> bool:
-        """A `failed` run goes back to `pending` and its failed steps get all their attempts back."""
+        """A `failed` run goes back to `pending`; its failed steps get all their attempts back."""
         with self.tx() as db:
             n = db.execute("UPDATE runs SET status = 'pending', error = NULL, owner = NULL,"
                            " lease_until = NULL WHERE id = ? AND status = 'failed'",
@@ -233,6 +234,8 @@ class Store:
         Runs waiting for an external event (`wait_for_event`, e.g. CI) are not listed.
         """
         items = []
+        questions: list
+        details: Any
         for run in reversed(self.list_runs("waiting", limit=100_000)):
             waiting = [s for s in self.list_steps(run.id) if s.status == "waiting"]
             step = waiting[-1] if waiting else None
@@ -252,7 +255,7 @@ class Store:
 
     # --- steps ------------------------------------------------------------
 
-    def get_step(self, run_id: str, seq: int) -> Optional[StepRow]:
+    def get_step(self, run_id: str, seq: int) -> StepRow | None:
         rows = self.q("SELECT * FROM steps WHERE run_id = ? AND seq = ?", (run_id, seq))
         return self._step(rows[0]) if rows else None
 
@@ -261,7 +264,7 @@ class Store:
                 self.q("SELECT * FROM steps WHERE run_id = ? ORDER BY seq", (run_id,))]
 
     def start_step(self, run_id: str, seq: int, name: str, now: float,
-                   owner: Optional[str] = None) -> Optional[StepRow]:
+                   owner: str | None = None) -> StepRow | None:
         """Creates the step (or marks it running again). With `owner`, None if the lease is gone."""
         with self.tx() as db:
             if owner is not None and not db.execute(
@@ -274,7 +277,7 @@ class Store:
                        (run_id, seq))
         return self.get_step(run_id, seq)
 
-    def update_step(self, run_id: str, seq: int, *, owner: Optional[str] = None,
+    def update_step(self, run_id: str, seq: int, *, owner: str | None = None,
                     **fields: Any) -> bool:
         """With `owner`, only writes while that owner holds the lease. Returns whether it wrote."""
         sets, params = [], {"run_id": run_id, "seq": seq, "owner": owner}

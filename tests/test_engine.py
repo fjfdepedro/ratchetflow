@@ -435,7 +435,8 @@ def test_the_inbox_lists_only_runs_waiting_for_a_person(make_engine):
     def human(ctx):
         def approval():
             if ctx.scratch.get("signal") is None:
-                raise NeedsHuman("outline.ok", long_question, details={"sections": ["intro", "body"]})
+                raise NeedsHuman("outline.ok", long_question,
+                                 details={"sections": ["intro", "body"]})
             return "approved"
         return ctx.step("approval", approval)
 

@@ -29,27 +29,27 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional
+from typing import Any
 
 from ..errors import Fatal, Pause, Retryable
-from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, sum_tokens,
-                      validated)
+from ._common import DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, sum_tokens, validated
 from .claude import PRICES, _raise_for_error, _short_usage, estimate_cost
 
 
 def claude_sdk(ctx: Any, prompt: str, *, options: Any = None, timeout_s: float = 1800,
-               validate: Optional[Callable[[Any], Any]] = None, expect_json: bool = True,
+               validate: Callable[[Any], Any] | None = None, expect_json: bool = True,
                resume_prompt: str = DEFAULT_RESUME_PROMPT,
                now: Callable[[], datetime] = datetime.now,
-               prices: Optional[Prices] = None, query: Optional[Callable[..., Any]] = None) -> dict:
+               prices: Prices | None = None, query: Callable[..., Any] | None = None) -> dict:
     """Runs one Agent SDK session as a step and returns its text, data, session and cost.
 
     `options` is a `ClaudeAgentOptions` (never modified: the step works on a copy). `query`
     replaces `claude_agent_sdk.query`, for tests.
     """
     sdk = _sdk()
-    query = query or sdk.query
+    ask: Callable[..., Any] = sdk.query if query is None else query
     scratch = ctx.scratch
     bill_unbilled(ctx, scratch.get("unbilled_usd"))  # an earlier attempt died with the process
     options = options or sdk.ClaudeAgentOptions()
@@ -66,7 +66,7 @@ def claude_sdk(ctx: Any, prompt: str, *, options: Any = None, timeout_s: float =
     stop = getattr(ctx, "cancelled", None) or (lambda: False)
 
     try:
-        seen = asyncio.run(_drive(sdk, query, prompt, options, ctx, timeout_s, stop,
+        seen = asyncio.run(_drive(sdk, ask, prompt, options, ctx, timeout_s, stop,
                                   prices or PRICES))
     except BaseException:
         try:  # cut off before the result: bill the estimate now

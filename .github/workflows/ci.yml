@@ -46,6 +46,22 @@ jobs:
           uv run ratchet --app demo.py:engine tick
           uv run ratchet --app demo.py:engine show a1 | grep -q completed
 
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: uv sync --locked
+      - name: Ruff
+        run: uv run ruff check src tests examples
+      - name: Mypy
+        run: uv run mypy
+
   agent-sdk:
     name: Agent SDK adapter
     runs-on: ubuntu-latest

@@ -28,13 +28,21 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 from ..errors import Pause, Retryable
-from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, price, reset_time, run_jsonl,
-                      validated)
+from ._common import (
+    DEFAULT_RESUME_PROMPT,
+    Prices,
+    add_usage,
+    price,
+    reset_time,
+    run_jsonl,
+    validated,
+)
 
 _LIMIT = re.compile(r"usage limit", re.I)
 _TRY_AGAIN = re.compile(r"try again at[^\n]*?(\d{1,2}):(\d{2})\s*(am|pm)?", re.I)
@@ -44,14 +52,14 @@ _TRY_AGAIN_DATE = re.compile(r"try again at\s+([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:
 _MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 
-def codex(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
-          model: Optional[str] = None, sandbox: Optional[str] = None,
-          output_schema: Optional[dict] = None, timeout_s: float = 1800,
-          validate: Optional[Callable[[Any], Any]] = None, expect_json: bool = True,
+def codex(ctx: Any, prompt: str, *, cwd: str | Path | None = None,
+          model: str | None = None, sandbox: str | None = None,
+          output_schema: dict | None = None, timeout_s: float = 1800,
+          validate: Callable[[Any], Any] | None = None, expect_json: bool = True,
           extra_args: Sequence[str] = (), bin: str = "codex",
-          resume_prompt: str = DEFAULT_RESUME_PROMPT, env: Optional[dict] = None,
+          resume_prompt: str = DEFAULT_RESUME_PROMPT, env: dict | None = None,
           now: Callable[[], datetime] = datetime.now,
-          prices: Optional[Prices] = None) -> dict:
+          prices: Prices | None = None) -> dict:
     """Runs one `codex exec` session as a step and returns its text, data, thread and tokens.
 
     `sandbox` is passed as `--sandbox` (`read-only`, `workspace-write`, `danger-full-access`);
@@ -132,7 +140,8 @@ def _reset_time(text: str, now: datetime, margin: timedelta = timedelta(minutes=
     """When the usage limit resets: on the announced date when there is one, else by the time."""
     found = _TRY_AGAIN_DATE.search(text)
     if found and found.group(1).lower() in _MONTHS:
-        hour, minute, ampm = int(found.group(4)), int(found.group(5)), (found.group(6) or "").lower()
+        hour, minute = int(found.group(4)), int(found.group(5))
+        ampm = (found.group(6) or "").lower()
         if ampm == "pm" and hour < 12:
             hour += 12
         if ampm == "am" and hour == 12:

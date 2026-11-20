@@ -35,8 +35,9 @@ Usage:
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any
 
 from ..engine import BUDGET_EVENT
 from ..errors import Fatal, NeedsHuman, Pause, Retryable
@@ -51,15 +52,15 @@ _SPEND_LIMITS = ("EnforcedSpendLimitReachedError", "ContractSpendLimitReachedErr
                  "LinkedOrganizationSpendLimitReachedError", "PaymentRequiredError")
 
 
-def anthropic_api(ctx: Any, prompt: Optional[str] = None, *,
-                  messages: Optional[Sequence[dict]] = None, model: str = DEFAULT_MODEL,
-                  system: Any = None, tools: Optional[Sequence[dict]] = None,
-                  handlers: Optional[Mapping[str, Callable[[dict], Any]]] = None,
+def anthropic_api(ctx: Any, prompt: str | None = None, *,
+                  messages: Sequence[dict] | None = None, model: str = DEFAULT_MODEL,
+                  system: Any = None, tools: Sequence[dict] | None = None,
+                  handlers: Mapping[str, Callable[[dict], Any]] | None = None,
                   max_tokens: int = 64000, max_turns: int = 50,
-                  validate: Optional[Callable[[Any], Any]] = None, expect_json: bool = True,
+                  validate: Callable[[Any], Any] | None = None, expect_json: bool = True,
                   fix_prompt: str = DEFAULT_FIX_PROMPT, client: Any = None,
                   now: Callable[[], datetime] = datetime.now,
-                  prices: Optional[Prices] = None, **params: Any) -> dict:
+                  prices: Prices | None = None, **params: Any) -> dict:
     """Runs the conversation to its final answer and returns its text, data, cost and tokens.
 
     Give either `prompt` or the opening `messages`. `tools` are tool definitions as the API
@@ -76,7 +77,8 @@ def anthropic_api(ctx: Any, prompt: Optional[str] = None, *,
     if not history:
         if (prompt is None) == (messages is None):
             raise Fatal("give either prompt or messages")
-        history = [{"role": "user", "content": prompt}] if prompt is not None else list(messages)
+        history = ([{"role": "user", "content": prompt}] if prompt is not None
+                   else list(messages or []))
     elif scratch.get("answered"):
         # The last answer did not validate: ask for a fix in the same conversation.
         history.append({"role": "user",
