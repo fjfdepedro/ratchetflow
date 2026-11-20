@@ -11,9 +11,10 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Any
 
 from ..errors import Retryable
 
@@ -34,7 +35,7 @@ def price(model: str, prices: Prices) -> tuple[float, float, float]:
     return tuple(max(p[i] for p in prices.values()) for i in range(3))  # type: ignore[return-value]
 
 
-def reset_time(found: Optional[re.Match], now: datetime,
+def reset_time(found: re.Match | None, now: datetime,
                margin: timedelta = timedelta(minutes=2),
                fallback: timedelta = timedelta(minutes=15)) -> datetime:
     """When a quota resets, from a "1:30pm" / "23:15" match whose groups are (hour, minute, am/pm).
@@ -43,7 +44,8 @@ def reset_time(found: Optional[re.Match], now: datetime,
     """
     if not found:
         return now + fallback
-    hour, minute, ampm = int(found.group(1)), int(found.group(2) or 0), (found.group(3) or "").lower()
+    hour, minute = int(found.group(1)), int(found.group(2) or 0)
+    ampm = (found.group(3) or "").lower()
     if ampm == "pm" and hour < 12:
         hour += 12
     if ampm == "am" and hour == 12:
@@ -54,14 +56,14 @@ def reset_time(found: Optional[re.Match], now: datetime,
     return at + margin
 
 
-def bill_unbilled(ctx: Any, usd: Optional[float]) -> None:
+def bill_unbilled(ctx: Any, usd: float | None) -> None:
     """Bills the estimate an attempt left in the scratch, once."""
     if usd:
         ctx.record_cost(float(usd))
         ctx.save_scratch(unbilled_usd=0)
 
 
-def add_usage(total: Optional[dict], usage: dict) -> dict:
+def add_usage(total: dict | None, usage: dict) -> dict:
     """Tokens of every attempt of the step so far: input, output, cache_read, cache_write."""
     total = dict(total or {})
     for key in ("input", "output", "cache_read", "cache_write"):
@@ -83,7 +85,7 @@ def extract_json(text: str) -> Any:
     return json.loads(blocks[-1] if blocks else text)
 
 
-def validated(ctx: Any, text: str, validate: Optional[Callable[[Any], Any]],
+def validated(ctx: Any, text: str, validate: Callable[[Any], Any] | None,
               expect_json: bool) -> Any:
     """Runs `validate` on the answer; an invalid answer is retried, telling the agent why."""
     if not validate:
@@ -97,8 +99,8 @@ def validated(ctx: Any, text: str, validate: Optional[Callable[[Any], Any]],
     return data
 
 
-def run_jsonl(cmd: Sequence[str], stdin_text: str, cwd: Optional[str | Path],
-              env: Optional[dict], timeout_s: float, on_event: Callable[[dict], None],
+def run_jsonl(cmd: Sequence[str], stdin_text: str, cwd: str | Path | None,
+              env: dict | None, timeout_s: float, on_event: Callable[[dict], None],
               stop: Callable[[], bool] = lambda: False) -> tuple[int, str]:
     """Runs an agent CLI that prints one JSON event per line and hands each event to `on_event`.
 
@@ -111,7 +113,7 @@ def run_jsonl(cmd: Sequence[str], stdin_text: str, cwd: Optional[str | Path],
                             stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
                             start_new_session=True)
     assert proc.stdin and proc.stdout and proc.stderr
-    lines: "queue.Queue[Optional[str]]" = queue.Queue()
+    lines: queue.Queue[str | None] = queue.Queue()
     stderr_tail: collections.deque[str] = collections.deque(maxlen=50)
 
     def read_stdout() -> None:

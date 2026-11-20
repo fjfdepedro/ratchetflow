@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Optional, Sequence
+from typing import Any
 
 
 class Retryable(Exception):
@@ -32,7 +33,7 @@ class NeedsHuman(Exception):
     """
 
     def __init__(self, event: str, reason: str = "", details: Any = None,
-                 questions: Optional[Sequence[str]] = None):
+                 questions: Sequence[str] | None = None):
         super().__init__(reason or f"waiting for event {event!r}")
         if questions is not None and (isinstance(questions, str)
                                       or not all(isinstance(q, str) for q in questions)):

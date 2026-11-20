@@ -21,14 +21,24 @@ Usage:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 from ..engine import BUDGET_EVENT
 from ..errors import Fatal, NeedsHuman, Pause, Retryable
-from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, price,
-                      reset_time, run_jsonl, sum_tokens, validated)
+from ._common import (
+    DEFAULT_RESUME_PROMPT,
+    Prices,
+    add_usage,
+    bill_unbilled,
+    price,
+    reset_time,
+    run_jsonl,
+    sum_tokens,
+    validated,
+)
 
 # USD per million tokens: (input, output, cache read), from Anthropic's price list (Nov 2026).
 # Cache writes cost 1.25x input (5-minute TTL) or 2x input (1-hour TTL). Only used to estimate
@@ -55,14 +65,14 @@ _RESET = re.compile(r"resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.
 _OVERLOAD = re.compile(r"overloaded|529|50[0-4]|internal server error|ECONNRESET|ETIMEDOUT", re.I)
 
 
-def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
-           model: Optional[str] = None, max_turns: Optional[int] = None,
-           timeout_s: float = 1800, validate: Optional[Callable[[Any], Any]] = None,
+def claude(ctx: Any, prompt: str, *, cwd: str | Path | None = None,
+           model: str | None = None, max_turns: int | None = None,
+           timeout_s: float = 1800, validate: Callable[[Any], Any] | None = None,
            extra_args: Sequence[str] = (), bin: str = "claude",
            resume_prompt: str = DEFAULT_RESUME_PROMPT,
-           env: Optional[dict] = None, now: Callable[[], datetime] = datetime.now,
-           prices: Optional[Prices] = None,
-           expect_json: bool = True, max_budget_usd: Optional[float] = None) -> dict:
+           env: dict | None = None, now: Callable[[], datetime] = datetime.now,
+           prices: Prices | None = None,
+           expect_json: bool = True, max_budget_usd: float | None = None) -> dict:
     """Runs one `claude -p` session as a step and returns its text, data, session and cost.
 
     `validate` receives the JSON extracted from the answer, or with `expect_json=False` the
@@ -153,7 +163,7 @@ def _reset_time(text: str, now: datetime, margin: timedelta = timedelta(minutes=
 
 
 def estimate_cost(usage: dict, model: str,
-                  prices: Optional[Prices] = None) -> float:
+                  prices: Prices | None = None) -> float:
     """USD for one API message's `usage`, as Anthropic bills it."""
     inp, out, read = price(model, prices or PRICES)
     written = usage.get("cache_creation_input_tokens") or 0
@@ -169,11 +179,11 @@ def estimate_cost(usage: dict, model: str,
     ) / 1_000_000
 
 
-def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
-                env: Optional[dict], timeout_s: float,
+def _run_stream(cmd: list[str], stdin_text: str, cwd: str | Path | None,
+                env: dict | None, timeout_s: float,
                 on_session: Callable[[str], None],
                 on_usage: Callable[[float], None] = lambda _usd: None,
-                prices: Optional[Prices] = None,
+                prices: Prices | None = None,
                 stop: Callable[[], bool] = lambda: False) -> dict:
     result: dict = {}
     announced = False

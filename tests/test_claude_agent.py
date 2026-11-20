@@ -11,8 +11,8 @@ from datetime import datetime
 import pytest
 
 from ratchetflow.agents import claude
-from ratchetflow.engine import BUDGET_EVENT
 from ratchetflow.agents.claude import _reset_time, estimate_cost
+from ratchetflow.engine import BUDGET_EVENT
 
 FAKE = textwrap.dedent(f"""\
     #!{sys.executable}
@@ -50,7 +50,8 @@ FAKE = textwrap.dedent(f"""\
         msg = {{"id": "m1", "model": "claude-opus-5-5", "usage": {{
             "input_tokens": 1000, "output_tokens": 0, "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 2000,
-            "cache_creation": {{"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 2000}}}}}}
+            "cache_creation": {{"ephemeral_5m_input_tokens": 0,
+                               "ephemeral_1h_input_tokens": 2000}}}}}}
         out({{"type": "assistant", "message": msg}})
         out({{"type": "assistant", "message": msg}})   # one event per content block
         os._exit(1)
@@ -87,7 +88,7 @@ def fake(tmp_path, monkeypatch):
         monkeypatch.setenv("FAKE_MODES", ",".join(modes))
 
     def calls():
-        return [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
     return str(bin_), set_modes, calls, log
 
