@@ -8,4 +8,4 @@ from .errors import Fatal, NeedsHuman, NonDeterminismError, Pause, Retryable, St
 
 __all__ = ["Context", "Engine", "Fatal", "NeedsHuman", "NonDeterminismError", "Pause",
            "Retryable", "StepFailed"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
