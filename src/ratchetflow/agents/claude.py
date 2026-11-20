@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional, Sequence
 from ..engine import BUDGET_EVENT
 from ..errors import Fatal, NeedsHuman, Pause, Retryable
 from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, price,
-                      reset_time, run_jsonl, validated)
+                      reset_time, run_jsonl, sum_tokens, validated)
 
 # USD per million tokens: (input, output, cache read), from Anthropic's price list (Nov 2026).
 # Cache writes cost 1.25x input (5-minute TTL) or 2x input (1-hour TTL). Only used to estimate
@@ -108,7 +108,10 @@ def claude(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     # safer than too little for a budget).
     if result.get("total_cost_usd"):
         ctx.record_cost(float(result["total_cost_usd"]))
-    usage = add_usage(ctx.scratch.get("usage"), _short_usage(result.get("usage") or {}))
+    tokens = _short_usage(result.get("usage") or {})
+    if not any(tokens.values()):  # a session cut by its budget reports zero tokens: count ours
+        tokens = result.get("_message_tokens") or tokens
+    usage = add_usage(ctx.scratch.get("usage"), tokens)
     models = sorted({*(ctx.scratch.get("models") or []), *(result.get("modelUsage") or {})})
     ctx.save_scratch(unbilled_usd=0, usage=usage, models=models)
     text = result.get("result") or ""
@@ -177,6 +180,7 @@ def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
     # Usage per API message. The stream repeats a message once per content block, and its
     # output_tokens is the count when the message started, so the estimate is a lower bound.
     usage_by_msg: dict[str, float] = {}
+    tokens_by_msg: dict[str, dict] = {}
 
     def on_event(ev: dict) -> None:
         nonlocal announced, result
@@ -190,10 +194,11 @@ def _run_stream(cmd: list[str], stdin_text: str, cwd: Optional[str | Path],
             if usage_by_msg.get(msg["id"]) != usd:
                 usage_by_msg[msg["id"]] = usd
                 on_usage(sum(usage_by_msg.values()))  # to disk: billable even if we die
+            tokens_by_msg[msg["id"]] = _short_usage(msg["usage"])
         if ev.get("type") == "result":
             result = ev
 
     code, err = run_jsonl(cmd, stdin_text, cwd, env, timeout_s, on_event, stop)
     if not result:
         raise Retryable(f"the CLI exited (code {code}) without a result event: {err}")
-    return result
+    return {**result, "_message_tokens": sum_tokens(tokens_by_msg.values())}

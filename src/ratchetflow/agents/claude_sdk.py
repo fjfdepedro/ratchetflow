@@ -33,7 +33,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
 from ..errors import Fatal, Pause, Retryable
-from ._common import DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, validated
+from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, bill_unbilled, sum_tokens,
+                      validated)
 from .claude import PRICES, _raise_for_error, _short_usage, estimate_cost
 
 
@@ -87,7 +88,10 @@ def claude_sdk(ctx: Any, prompt: str, *, options: Any = None, timeout_s: float =
     # Bill first, then clear: if we die in between, the estimate is billed twice.
     if result.total_cost_usd:
         ctx.record_cost(float(result.total_cost_usd))
-    usage = add_usage(ctx.scratch.get("usage"), _short_usage(result.usage or {}))
+    tokens = _short_usage(result.usage or {})
+    if not any(tokens.values()):  # a session cut by its budget reports no tokens: count ours
+        tokens = seen["tokens"]
+    usage = add_usage(ctx.scratch.get("usage"), tokens)
     models = sorted({*(ctx.scratch.get("models") or []), *(result.model_usage or {})})
     ctx.save_scratch(unbilled_usd=0, usage=usage, models=models)
     text = result.result or ""
@@ -121,9 +125,10 @@ def _sdk() -> Any:
 
 async def _drive(sdk: Any, query: Callable[..., Any], prompt: str, options: Any, ctx: Any,
                  timeout_s: float, stop: Callable[[], bool], prices: Prices) -> dict:
-    seen: dict = {"result": None, "error": None, "rate_limit_reset": None}
+    seen: dict = {"result": None, "error": None, "rate_limit_reset": None, "tokens": {}}
     announced = False
     usage_by_msg: dict[str, float] = {}
+    tokens_by_msg: dict[str, dict] = {}
 
     async def consume() -> None:
         nonlocal announced
@@ -139,6 +144,8 @@ async def _drive(sdk: Any, query: Callable[..., Any], prompt: str, options: Any,
                 if usage_by_msg.get(msg.message_id) != usd:
                     usage_by_msg[msg.message_id] = usd
                     ctx.save_scratch(unbilled_usd=sum(usage_by_msg.values()))
+                tokens_by_msg[msg.message_id] = _short_usage(msg.usage)
+                seen["tokens"] = sum_tokens(tokens_by_msg.values())
             elif isinstance(msg, sdk.RateLimitEvent):
                 info = msg.rate_limit_info
                 seen["rate_limit_reset"] = info.resets_at if info.status == "rejected" else None

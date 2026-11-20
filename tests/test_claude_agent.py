@@ -37,9 +37,14 @@ FAKE = textwrap.dedent(f"""\
         out({{"type": "result", "is_error": True, "session_id": "s-1",
              "result": "You've hit your session limit · resets 1:30pm"}})
         sys.exit(1)
-    if mode == "overbudget":
+    if mode == "overbudget":  # like the real CLI: messages first, then a result with zero usage
+        for i in (1, 1, 2):
+            out({{"type": "assistant", "message": {{"id": f"m{{i}}", "model": "claude-opus-5-5",
+                 "usage": {{"input_tokens": 1000, "output_tokens": 10}}}}}})
         out({{"type": "result", "is_error": True, "subtype": "error_max_budget_usd",
-             "result": None, "total_cost_usd": 0.5}})
+             "result": None, "total_cost_usd": 0.5,
+             "usage": {{"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                       "cache_creation_input_tokens": 0}}}})
         sys.exit(1)
     if mode == "partial":
         msg = {{"id": "m1", "model": "claude-opus-5-5", "usage": {{
@@ -273,6 +278,8 @@ def test_a_session_that_hits_its_budget_waits_for_more(make_engine, fake):
     run = e.store.get_run("r")
     assert run.status == "waiting" and run.wait_event == BUDGET_EVENT
     assert len(calls()) == 1                       # no retry burning money
+    tokens = e.store.list_steps("r")[0].scratch["usage"]  # counted from the messages
+    assert tokens == {"input": 2000, "output": 20, "cache_read": 0, "cache_write": 0}
     e.signal("r", BUDGET_EVENT, {"add_usd": 5})
     e.tick()
     assert e.store.get_run("r").status == "completed"
