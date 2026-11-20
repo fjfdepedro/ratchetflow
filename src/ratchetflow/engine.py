@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from .errors import (
     Fatal,
@@ -381,7 +381,7 @@ class Context:
             scratch["signal"] = payload
         self._write(row.seq, scratch=scratch)
 
-    def _suspend_from(self, seq: int, e: Exception) -> None:
+    def _suspend_from(self, seq: int, e: Exception) -> NoReturn:
         self._write(seq, status="waiting", error=_short(e))
         if isinstance(e, Pause):
             raise _SuspendWith(_Suspension(wake_at=e.until.timestamp(), reason=str(e)))
