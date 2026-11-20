@@ -32,23 +32,28 @@ FAKE = textwrap.dedent(f"""\
     if mode == "die":
         os._exit(1)
     if mode == "limit":
-        out({{"type": "error", "message": "You've hit your usage limit. Try again at 3:45 PM."}})
-        out({{"type": "turn.failed", "error": {{"message": "You've hit your usage limit. Try again at 3:45 PM."}}}})
+        msg = "You've hit your usage limit. Try again at 3:45 PM."
+        out({{"type": "error", "message": msg}})
+        out({{"type": "turn.failed", "error": {{"message": msg}}}})
         sys.exit(1)
     if mode == "limit_date":  # the real message, when the reset is days away
-        msg = ("You\u2019ve hit your usage limit. To continue using Codex, start a free trial of Plus "
-               "today (https://chatgpt.com/explore/plus), or try again at Nov 27th, 2026 8:31 AM.")
+        msg = ("You\u2019ve hit your usage limit. To continue using Codex, start a free trial of "
+               "Plus today (https://chatgpt.com/explore/plus), or try again at Nov 27th, 2026 "
+               "8:31 AM.")
         out({{"type": "error", "message": msg}})
         out({{"type": "turn.failed", "error": {{"message": msg}}}})
         sys.exit(1)
     if mode == "failed":
-        out({{"type": "turn.failed", "error": {{"message": "stream disconnected before completion"}}}})
+        err = {{"message": "stream disconnected before completion"}}
+        out({{"type": "turn.failed", "error": err}})
         sys.exit(1)
     text = "not json" if mode == "junk" else 'Done.\\n```json\\n{{"steps": ["a", "b"]}}\\n```'
-    out({{"type": "item.completed", "item": {{"id": "i0", "type": "reasoning", "text": "thinking"}}}})
+    thought = {{"id": "i0", "type": "reasoning", "text": "thinking"}}
+    out({{"type": "item.completed", "item": thought}})
     out({{"type": "item.completed", "item": {{"id": "i1", "type": "agent_message", "text": text}}}})
     out({{"type": "turn.completed", "usage": {{"input_tokens": 1000, "cached_input_tokens": 800,
-                                               "output_tokens": 50, "reasoning_output_tokens": 20}}}})
+                                              "output_tokens": 50,
+                                              "reasoning_output_tokens": 20}}}})
     """)
 
 
@@ -64,7 +69,7 @@ def fake(tmp_path, monkeypatch):
         monkeypatch.setenv("FAKE_MODES", ",".join(modes))
 
     def calls():
-        return [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
     return str(bin_), set_modes, calls
 

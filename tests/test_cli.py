@@ -102,7 +102,8 @@ def test_sigterm_kills_every_agent_of_a_parallel_step(tmp_path):
     assert run.owner is None and run.lease_until is None
 
 
-def test_inbox_shows_the_whole_question_its_details_and_how_to_answer(tmp_path, monkeypatch, capsys):
+def test_inbox_shows_the_whole_question_its_details_and_how_to_answer(tmp_path, monkeypatch,
+                                                                       capsys):
     monkeypatch.chdir(tmp_path)
     app = write_app(tmp_path, """
         from ratchetflow import NeedsHuman
@@ -183,7 +184,7 @@ def test_export_writes_one_json_line_per_step(tmp_path, monkeypatch, capsys):
     assert "agent" not in rows[3] and rows[3]["waited_s"] >= 0 and rows[3]["finished_at"]
     assert rows[1]["error"] == "NeedsHuman: go on?" and rows[1]["finished_at"] is None
     main(["--app", app, "export", "--status", "waiting"])
-    assert {json.loads(l)["run_id"] for l in capsys.readouterr().out.splitlines()} == {"a"}
+    assert {json.loads(line)["run_id"] for line in capsys.readouterr().out.splitlines()} == {"a"}
     main(["--app", app, "export", "b"])
     assert len(capsys.readouterr().out.splitlines()) == 2
 

@@ -7,6 +7,7 @@ Thanks for taking a look. ratchetflow is small on purpose; these rules keep it t
 ```bash
 uv sync
 uv run pytest -q
+uv run ruff check src tests examples   # CI fails on any finding
 ```
 
 ## Ground rules
