@@ -194,6 +194,9 @@ out = ctx.step("tests", codex, ctx, "Add tests for the parser; answer with a JSO
 official SDK (`pip install "ratchetflow[anthropic]"`; the core keeps no dependencies). The
 conversation is the step's state:
 
+> **Not yet run against the real API.** Its tests use a fake client built from the SDK's types.
+> The other adapters have been run against their real CLI or SDK. Reports are welcome.
+
 - it is stored after every answer and every round of tool results, so a crash costs at most the
   call in flight. If the process dies while your tools run, only that round runs again, and the
   answer that asked for them is not paid for twice: **tools that touch the world should be safe

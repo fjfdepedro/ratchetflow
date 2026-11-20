@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
 ### Added
 
 - `ratchet inbox` (and `--json`): runs waiting for a person, with the whole question, its
@@ -26,7 +28,8 @@ All notable changes to this project are documented here. The format follows
   with `prices=`).
 - `ratchetflow.agents.anthropic_api` (extra `ratchetflow[anthropic]`): a Messages API
   conversation with your own tools as one step, stored after every answer and every round of
-  tool results, billed per answer and checked against the budget before every call.
+  tool results, billed per answer and checked against the budget before every call. Not yet
+  run against the real API: its tests use a fake client.
 - `ratchetflow.agents.claude_sdk` (extra `ratchetflow[agent-sdk]`): a Claude Agent SDK session
   as a step, resumed by session id, paused on a rejected rate limit until its reset, and capped
   at the budget left.
@@ -69,5 +72,6 @@ First release. Install `ratchetflow`, import `ratchetflow`; the CLI is `ratchet`
 - `ratchet` CLI: `start`, `tick`, `runs`, `show`, `signal`, `retry`.
 - CI on GitHub Actions for Python 3.11–3.13.
 
-[Unreleased]: https://github.com/fjfdepedro/ratchetflow/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fjfdepedro/ratchetflow/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/fjfdepedro/ratchetflow/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fjfdepedro/ratchetflow/releases/tag/v0.1.0
