@@ -9,6 +9,7 @@ uv sync
 uv run pytest -q
 uv run ruff check src tests examples   # CI fails on any finding
 uv run mypy                            # and on any type error
+uv run pytest -q --cov                 # and under 90% branch coverage
 ```
 
 ## Ground rules
