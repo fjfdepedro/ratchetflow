@@ -47,7 +47,7 @@ jobs:
           uv run ratchet --app demo.py:engine show a1 | grep -q completed
 
   lint:
-    name: Lint
+    name: Lint and types
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -59,6 +59,8 @@ jobs:
         run: uv sync --locked
       - name: Ruff
         run: uv run ruff check src tests examples
+      - name: Mypy
+        run: uv run mypy
 
   agent-sdk:
     name: Agent SDK adapter

@@ -49,7 +49,7 @@ def claude_sdk(ctx: Any, prompt: str, *, options: Any = None, timeout_s: float =
     replaces `claude_agent_sdk.query`, for tests.
     """
     sdk = _sdk()
-    query = query or sdk.query
+    ask: Callable[..., Any] = sdk.query if query is None else query
     scratch = ctx.scratch
     bill_unbilled(ctx, scratch.get("unbilled_usd"))  # an earlier attempt died with the process
     options = options or sdk.ClaudeAgentOptions()
@@ -66,7 +66,7 @@ def claude_sdk(ctx: Any, prompt: str, *, options: Any = None, timeout_s: float =
     stop = getattr(ctx, "cancelled", None) or (lambda: False)
 
     try:
-        seen = asyncio.run(_drive(sdk, query, prompt, options, ctx, timeout_s, stop,
+        seen = asyncio.run(_drive(sdk, ask, prompt, options, ctx, timeout_s, stop,
                                   prices or PRICES))
     except BaseException:
         try:  # cut off before the result: bill the estimate now

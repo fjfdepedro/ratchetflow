@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .engine import BUDGET_EVENT, Engine
-from .store import Store
+from .store import RunRow, StepRow, Store
 
 
 def _load_engine(spec: str) -> Engine:
@@ -57,7 +57,7 @@ def _span(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def _duration(step) -> str:
+def _duration(step: StepRow) -> str:
     """Working time, plus how long the step waited (for a person, a pause or a retry)."""
     if not step.finished_at:
         return "..."
@@ -72,7 +72,7 @@ def _iso(ts: float | None) -> str | None:
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds") if ts else None
 
 
-def _export_row(run, step) -> dict:
+def _export_row(run: RunRow, step: StepRow) -> dict:
     """One step, flat enough for pandas or DuckDB. Agent steps add what the session used."""
     wall = step.finished_at - step.started_at if step.finished_at else None
     row = {"run_id": run.id, "workflow": run.workflow, "run_status": run.status,

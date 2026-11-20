@@ -77,7 +77,8 @@ def anthropic_api(ctx: Any, prompt: str | None = None, *,
     if not history:
         if (prompt is None) == (messages is None):
             raise Fatal("give either prompt or messages")
-        history = [{"role": "user", "content": prompt}] if prompt is not None else list(messages)
+        history = ([{"role": "user", "content": prompt}] if prompt is not None
+                   else list(messages or []))
     elif scratch.get("answered"):
         # The last answer did not validate: ask for a fix in the same conversation.
         history.append({"role": "user",

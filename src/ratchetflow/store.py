@@ -234,6 +234,8 @@ class Store:
         Runs waiting for an external event (`wait_for_event`, e.g. CI) are not listed.
         """
         items = []
+        questions: list
+        details: Any
         for run in reversed(self.list_runs("waiting", limit=100_000)):
             waiting = [s for s in self.list_steps(run.id) if s.status == "waiting"]
             step = waiting[-1] if waiting else None
