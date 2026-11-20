@@ -44,6 +44,7 @@ dev = [
     "anthropic>=2.10.0",
     "mypy>=1.18",
     "pytest>=8",
+    "pytest-cov>=7",
     "ruff>=0.14",
 ]
 
@@ -82,3 +83,12 @@ strict_equality = true
 [[tool.mypy.overrides]]
 module = ["claude_agent_sdk", "claude_agent_sdk.*"]   # optional extra, not installed in CI's lint job
 ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["ratchetflow"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
