@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 from ..errors import Retryable
 
@@ -66,6 +66,14 @@ def add_usage(total: Optional[dict], usage: dict) -> dict:
     total = dict(total or {})
     for key in ("input", "output", "cache_read", "cache_write"):
         total[key] = total.get(key, 0) + int(usage.get(key) or 0)
+    return total
+
+
+def sum_tokens(per_message: Iterable[dict]) -> dict:
+    """The tokens of several messages, each already in add_usage's short form."""
+    total: dict = {}
+    for tokens in per_message:
+        total = add_usage(total, tokens)
     return total
 
 

@@ -28,7 +28,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
@@ -38,6 +38,10 @@ from ._common import (DEFAULT_RESUME_PROMPT, Prices, add_usage, price, reset_tim
 
 _LIMIT = re.compile(r"usage limit", re.I)
 _TRY_AGAIN = re.compile(r"try again at[^\n]*?(\d{1,2}):(\d{2})\s*(am|pm)?", re.I)
+# "try again at Nov 27th, 2026 8:31 AM": a reset days away comes with its date.
+_TRY_AGAIN_DATE = re.compile(r"try again at\s+([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?"
+                             r"\s+(\d{4}),?\s+(\d{1,2}):(\d{2})\s*(am|pm)?", re.I)
+_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 
 def codex(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
@@ -114,7 +118,7 @@ def codex(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
         text = seen["error"] or f"the CLI exited (code {code}) without finishing the turn: {err}"
         ctx.save_scratch(last_error=text[:400])
         if _LIMIT.search(text):
-            raise Pause(reset_time(_TRY_AGAIN.search(text), now()),
+            raise Pause(_reset_time(text, now()),
                         reason=f"usage limit reached: {text[:120]}")
         raise Retryable(text[:200])
 
@@ -122,6 +126,25 @@ def codex(ctx: Any, prompt: str, *, cwd: Optional[str | Path] = None,
     data = validated(ctx, text, validate, expect_json)
     return {"text": text, "data": data, "session_id": ctx.scratch.get("session_id"),
             "cost_usd": cost, "usage": usage, "models": [model] if model else []}
+
+
+def _reset_time(text: str, now: datetime, margin: timedelta = timedelta(minutes=2)) -> datetime:
+    """When the usage limit resets: on the announced date when there is one, else by the time."""
+    found = _TRY_AGAIN_DATE.search(text)
+    if found and found.group(1).lower() in _MONTHS:
+        hour, minute, ampm = int(found.group(4)), int(found.group(5)), (found.group(6) or "").lower()
+        if ampm == "pm" and hour < 12:
+            hour += 12
+        if ampm == "am" and hour == 12:
+            hour = 0
+        try:
+            at = datetime(int(found.group(3)), _MONTHS.index(found.group(1).lower()) + 1,
+                          int(found.group(2)), hour % 24, minute)
+        except ValueError:
+            at = None
+        if at is not None and at > now:
+            return at + margin
+    return reset_time(_TRY_AGAIN.search(text), now)
 
 
 def _same(data: Any) -> Any:

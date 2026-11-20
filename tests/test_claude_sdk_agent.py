@@ -173,6 +173,19 @@ def test_a_session_that_hits_its_budget_waits_for_more(make_engine):
     assert q.calls[1]["options"].resume == "s-1"
 
 
+def test_a_session_cut_by_its_budget_still_counts_its_tokens(make_engine):
+    # The real SDK sends a budget result whose usage has no token counts.
+    over = result("s-1", None, error=True, subtype="error_max_budget_usd", cost=0.5)
+    over.usage = {"output_tokens_details": {"thinking_tokens": 0}}
+    q = FakeQuery([init("s-1"), assistant("s-1", "m1", USAGE_1K), assistant("s-1", "m1", USAGE_1K),
+                   assistant("s-1", "m2", USAGE_1K), over])
+    e = make_engine()
+    flow(e, q)
+    e.start("w", run_id="r", budget_usd=10)
+    step = e.store.list_steps("r")[0]
+    assert step.scratch["usage"] == {"input": 2000, "output": 0, "cache_read": 0, "cache_write": 0}
+
+
 def test_max_turns_is_fatal_and_a_missing_cli_too(make_engine):
     q = FakeQuery([result("s-1", None, error=True, subtype="error_max_turns", cost=0.1)])
     e = make_engine()

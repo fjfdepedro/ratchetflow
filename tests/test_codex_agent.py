@@ -35,6 +35,12 @@ FAKE = textwrap.dedent(f"""\
         out({{"type": "error", "message": "You've hit your usage limit. Try again at 3:45 PM."}})
         out({{"type": "turn.failed", "error": {{"message": "You've hit your usage limit. Try again at 3:45 PM."}}}})
         sys.exit(1)
+    if mode == "limit_date":  # the real message, when the reset is days away
+        msg = ("You\u2019ve hit your usage limit. To continue using Codex, start a free trial of Plus "
+               "today (https://chatgpt.com/explore/plus), or try again at Nov 27th, 2026 8:31 AM.")
+        out({{"type": "error", "message": msg}})
+        out({{"type": "turn.failed", "error": {{"message": msg}}}})
+        sys.exit(1)
     if mode == "failed":
         out({{"type": "turn.failed", "error": {{"message": "stream disconnected before completion"}}}})
         sys.exit(1)
@@ -136,6 +142,18 @@ def test_usage_limit_pauses_until_try_again(make_engine, fake):
     run = e.store.get_run("r")
     assert run.status == "waiting"
     assert datetime.fromtimestamp(run.wake_at) == datetime(2026, 11, 19, 15, 47)
+    assert len(calls()) == 1
+
+
+def test_usage_limit_days_away_waits_for_that_date(make_engine, fake):
+    bin_, modes, calls = fake
+    modes("limit_date")
+    e = make_engine()
+    flow(e, bin_, now=lambda: datetime(2026, 11, 20, 11, 0))
+    e.start("w", run_id="r")
+    run = e.store.get_run("r")
+    assert run.status == "waiting"
+    assert datetime.fromtimestamp(run.wake_at) == datetime(2026, 11, 27, 8, 33)
     assert len(calls()) == 1
 
 
