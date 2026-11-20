@@ -46,6 +46,10 @@ jobs:
           uv run ratchet --app demo.py:engine tick
           uv run ratchet --app demo.py:engine show a1 | grep -q completed
 
+      - name: The real example loads (it spends tokens, so it does not run here)
+        working-directory: examples
+        run: ARTICLE_WORK=$RUNNER_TEMP/article uv run ratchet --app article.py:engine runs
+
   lint:
     name: Lint and types
     runs-on: ubuntu-latest

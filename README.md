@@ -63,7 +63,10 @@ ratchet --app flows.py:engine export > steps.jsonl  # one line per step: cost, t
 ```
 
 `runs`, `show`, `signal` and `retry` can also take `--db path/to/runs.db` instead of `--app`.
-There is a token-free demo in [`examples/demo.py`](examples/demo.py).
+There is a token-free demo in [`examples/demo.py`](examples/demo.py). For a real flow, see
+[`examples/article.py`](examples/article.py). Claude proposes topics and a person picks one.
+Claude writes, two reviews run at once, a person approves, and the article is published once.
+A run with Haiku costs about $0.03.
 
 ### Resume runs without a terminal open (Linux)
 
