@@ -1,4 +1,4 @@
-"""CLI: `ratchet runs | show | inbox | signal | export | retry | tick | start | systemd`.
+"""CLI: `ratchet runs | show | inbox | signal | export | report | retry | tick | start | systemd`.
 
 `tick` and `start` need the workflows: `--app module:engine` or `--app file.py:engine` (or the
 RATCHET_APP variable). The other commands only read or write the database: the one of `--app`
@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .engine import BUDGET_EVENT, Engine
+from .report import render
 from .store import RunRow, StepRow, Store
 
 
@@ -119,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     x = sub.add_parser("export", help="steps as JSON Lines (cost, time, tokens), for metrics")
     x.add_argument("run_ids", nargs="*", help="default: every run")
     x.add_argument("--status", help="only runs in this status")
+
+    rp = sub.add_parser("report", help="one run as a self-contained HTML page")
+    rp.add_argument("run_id")
+    rp.add_argument("-o", "--out", help="file to write (default: <run_id>.html; - for stdout)")
 
     t = sub.add_parser("retry", help="reopen a failed run")
     t.add_argument("run_id")
@@ -236,6 +241,18 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"no run {a.run_id}")
         store.add_event(a.run_id, a.event, json.loads(a.payload), time.time())
         print(f"event {a.event!r} sent; the next `ratchet tick` picks it up")
+        return 0
+    if a.cmd == "report":
+        try:
+            page = render(store, a.run_id)
+        except KeyError:
+            raise SystemExit(f"no run {a.run_id}") from None
+        if a.out == "-":
+            print(page)
+            return 0
+        out = Path(a.out or f"{a.run_id}.html")
+        out.write_text(page, encoding="utf-8")
+        print(f"wrote {out}")
         return 0
     if a.cmd == "retry":
         print("reopened" if store.reopen_failed(a.run_id) else "it was not failed")

@@ -60,6 +60,7 @@ ratchet --app flows.py:engine signal article-42 outline.ok '{"decision": "go on"
 ratchet --app flows.py:engine signal article-42 ratchet.budget '{"add_usd": 5}'
 ratchet --app flows.py:engine tick --loop 60      # or a systemd timer (below)
 ratchet --app flows.py:engine export > steps.jsonl  # one line per step: cost, time, tokens
+ratchet --app flows.py:engine report article-42   # the run as an HTML page: article-42.html
 ```
 
 `runs`, `show`, `signal` and `retry` can also take `--db path/to/runs.db` instead of `--app`.
@@ -67,6 +68,24 @@ There is a token-free demo in [`examples/demo.py`](examples/demo.py). For a real
 [`examples/article.py`](examples/article.py). Claude proposes topics and a person picks one.
 Claude writes, two reviews run at once, a person approves, and the article is published once.
 A run with Haiku costs about $0.03.
+
+### See how a run went
+
+`ratchet report <run>` writes one self-contained HTML page (`-o file`, or `-o -` for stdout). It
+needs no server and loads nothing from the network, so you can open it from disk or attach it
+to an issue. It shows:
+
+- **Flow**: the steps that ran, in order, each with its kind (agent session, a question for a
+  person, sleep, event), status, attempts, time and cost. Branches of `ctx.parallel` sit side by
+  side.
+- **Timeline**: when each step worked and when it waited. Quiet stretches longer than 30 s (a
+  person answering the next morning) are folded, so short steps stay visible.
+- **Cost**: per step, against the run's budget. **Steps**: a table with tokens for agent steps.
+- What the run is waiting for, with the exact `ratchet signal` to answer, or how to retry it.
+
+A workflow is a plain function, so the page shows the steps that ran, not the ones still to
+come. Parallel branches are told apart by their times overlapping, and within a step the work
+is drawn before the wait: the database keeps how long a step worked, not when.
 
 ### Resume runs without a terminal open (Linux)
 

@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `ratchet report <run>`: the run as one self-contained HTML page, with the flow of steps
+  (parallel branches side by side), a timeline of work and waits that folds long quiet
+  stretches, cost per step against the budget, and what the run is waiting for.
 - `docs/design.md`: the guarantees. What a crash at each point of a step costs, leases and
   fencing, waits and events, the soft budget, the determinism checks, and why SQLite.
 - `examples/article.py`: a real flow. Agents with validators, two human gates with details and
