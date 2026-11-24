@@ -1,4 +1,5 @@
-"""CLI: `ratchet runs | show | inbox | signal | export | report | retry | tick | start | systemd`.
+"""CLI: `ratchet runs | show | inbox | signal | cancel | export | report | retry | tick | start |
+systemd`.
 
 `tick` and `start` need the workflows: `--app module:engine` or `--app file.py:engine` (or the
 RATCHET_APP variable). The other commands only read or write the database: the one of `--app`
@@ -90,6 +91,23 @@ def _export_row(run: RunRow, step: StepRow) -> dict:
     return row
 
 
+def _seconds(span: str) -> float:
+    """`90`, `90s`, `30m`, `4h` or `2d` -> seconds."""
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    span = span.strip().lower()
+    try:
+        if span and span[-1] in units:
+            value = float(span[:-1]) * units[span[-1]]
+        else:
+            value = float(span)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"not a time span: {span!r} (try 90s, 30m, 4h, 2d)") from None
+    if value <= 0:
+        raise argparse.ArgumentTypeError("the timeout must be positive")
+    return value
+
+
 def _fmt_t(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S") if ts else "-"
 
@@ -117,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("event")
     g.add_argument("payload", nargs="?", default="null", help="JSON")
 
+    c = sub.add_parser("cancel", help="stop a run; the next `tick` runs its cleanup")
+    c.add_argument("run_id")
+    c.add_argument("--reason", default="cancelled by hand")
+
     x = sub.add_parser("export", help="steps as JSON Lines (cost, time, tokens), for metrics")
     x.add_argument("run_ids", nargs="*", help="default: every run")
     x.add_argument("--status", help="only runs in this status")
@@ -142,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("input", nargs="?", default="null", help="JSON")
     st.add_argument("--id", dest="run_id")
     st.add_argument("--budget", type=float, help="cap in USD")
+    st.add_argument("--timeout", type=_seconds, metavar="SPAN",
+                    help="cancel the run this long after it starts, waits included (30m, 4h, 2d)")
 
     a = p.parse_args(argv)
 
@@ -159,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             _stop_on_sigterm()
         if a.cmd == "start":
             run_id = engine.start(a.workflow, json.loads(a.input), run_id=a.run_id,
-                                  budget_usd=a.budget)
+                                  budget_usd=a.budget, timeout_s=a.timeout)
             run = engine.store.get_run(run_id)
             print(f"{run_id} {run.status if run else '?'}")
             return 0
@@ -197,6 +221,10 @@ def main(argv: list[str] | None = None) -> int:
             # traceback: its first line says enough.
             reason = run.error if run.status == "waiting" else run.error.splitlines()[0]
             print("  reason: " + reason.replace("\n", "\n          "))
+        if run.deadline is not None and run.status not in ("completed", "failed", "cancelled"):
+            print(f"  deadline: {_fmt_t(run.deadline)}")
+        if run.cancel_reason and run.status != "cancelled":
+            print(f"  cancel requested: {run.cancel_reason}")
         for step in store.list_steps(run.id):
             dur = _duration(step)
             print(f"  {step.seq:>3} {step.name:<28} {step.status:<8} x{step.attempts}"
@@ -241,6 +269,15 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"no run {a.run_id}")
         store.add_event(a.run_id, a.event, json.loads(a.payload), time.time())
         print(f"event {a.event!r} sent; the next `ratchet tick` picks it up")
+        return 0
+    if a.cmd == "cancel":
+        if not store.get_run(a.run_id):
+            raise SystemExit(f"no run {a.run_id}")
+        if not store.request_cancel(a.run_id, a.reason, time.time()):
+            print("it has already finished")
+            return 1
+        print("cancel requested: the next `ratchet tick` ends it and runs its cleanup"
+              " (a run in flight stops at its next step or heartbeat)")
         return 0
     if a.cmd == "report":
         try:

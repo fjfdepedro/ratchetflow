@@ -117,3 +117,20 @@ def test_cli_writes_the_page(make_engine, tmp_path, capsys):
     assert "</html>" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="no run nope"):
         main(["--db", db, "report", "nope"])
+
+
+def test_a_cancelled_run_says_so_and_lists_its_cleanup(make_engine):
+    e = make_engine()
+
+    @e.workflow("w", cleanup=lambda end: "torn down")
+    def w(ctx):
+        ctx.step("a", lambda: 1)
+        ctx.wait_for_event("ok", "ok")
+
+    e.start("w", run_id="r")
+    e.cancel("r", "wrong topic")
+    e.tick()
+    page = render(e.store, "r")
+    assert "<b>Cancelled.</b> wrong topic" in page
+    assert "ratchet.cleanup" in page
+    assert "ratchet retry" not in page

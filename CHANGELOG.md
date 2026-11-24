@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `ratchet cancel <run>` and `engine.cancel(run_id, reason)`: a run that waits ends at the next
+  `tick`; a run in flight stops before its next step, and its agents within a heartbeat. New
+  final status: `cancelled`.
+- `ratchet start --timeout 4h` and `timeout_s=`: a deadline for the whole run, waits included.
+  Past it, the run is cancelled.
+- `@engine.workflow(..., cleanup=fn)`: runs when a run fails, is cancelled or times out, with an
+  `Ending` (what the finished steps returned and what the others left in scratch), so it can
+  tear down sandboxes or branches. It is a durable step: retried, and resumed after a crash
+  without running the workflow again.
 - `ratchet report <run>`: the run as one self-contained HTML page, with the flow of steps
   (parallel branches side by side), a timeline of work and waits that folds long quiet
   stretches, cost per step against the budget, and what the run is waiting for.

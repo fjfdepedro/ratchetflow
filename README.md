@@ -52,18 +52,20 @@ def write_article(ctx, brief):
 ```
 
 ```bash
-ratchet --app flows.py:engine start write-article '{"topic": "...", "folder": "..."}' --id article-42 --budget 10
+ratchet --app flows.py:engine start write-article '{"topic": "...", "folder": "..."}' --id article-42 --budget 10 --timeout 2d
 ratchet --app flows.py:engine runs                # state of every run
 ratchet --app flows.py:engine show article-42     # steps, attempts, cost and duration
 ratchet --app flows.py:engine inbox               # runs waiting for you, and how to answer
 ratchet --app flows.py:engine signal article-42 outline.ok '{"decision": "go on"}'
 ratchet --app flows.py:engine signal article-42 ratchet.budget '{"add_usd": 5}'
+ratchet --app flows.py:engine cancel article-42 --reason "wrong topic"   # ends it; cleanup runs
 ratchet --app flows.py:engine tick --loop 60      # or a systemd timer (below)
 ratchet --app flows.py:engine export > steps.jsonl  # one line per step: cost, time, tokens
 ratchet --app flows.py:engine report article-42   # the run as an HTML page: article-42.html
 ```
 
-`runs`, `show`, `signal` and `retry` can also take `--db path/to/runs.db` instead of `--app`.
+`runs`, `show`, `signal`, `cancel` and `retry` can also take `--db path/to/runs.db` instead of
+`--app`.
 There is a token-free demo in [`examples/demo.py`](examples/demo.py). For a real flow, see
 [`examples/article.py`](examples/article.py). Claude proposes topics and a person picks one.
 Claude writes, two reviews run at once, a person approves, and the article is published once.
@@ -128,6 +130,8 @@ What each guarantee rests on, and what a crash at each point costs:
 | `Pause(until)` | parks the run until that time; the process moves on |
 | `NeedsHuman(event, reason, details=..., questions=[...])` | parks the run until `ratchet signal <run> <event>`; the payload lands in `ctx.scratch["signal"]` |
 
+A run ends as `completed`, `failed` or `cancelled`.
+
 An attempt that kills the whole process (OOM, segfault) counts too, so a step that brings the
 worker down fails after `retries` attempts instead of looping forever. A step that failed and
 was caught by the workflow raises `StepFailed` again on replay; it does not run again.
@@ -155,6 +159,39 @@ too). The budget is checked once before starting, so branches together can overs
 turn each.
 
 Starting a run again with the same `--id` neither duplicates it nor wakes it before its time.
+
+### Cancelling, timeouts and cleaning up
+
+A run that will not complete should not leave things running: a sandbox, a branch, a
+half-written folder. Give the workflow a `cleanup`:
+
+```python
+def tear_down(end):                  # an Ending: run_id, status, reason, outputs, scratch
+    box = end.outputs.get("sandbox") or end.scratch.get("sandbox", {}).get("creating")
+    if box:
+        delete_sandbox(box["id"])    # safe to repeat: it may run more than once
+
+@engine.workflow("night", cleanup=tear_down)
+def night(ctx, plan):
+    ...
+```
+
+- `cleanup(end)` runs when a run **fails**, is **cancelled**, or passes its **deadline**. It does
+  not run when the run completes. `end.outputs` has what the finished steps returned and
+  `end.scratch` what the others saved, by step name, so it can find what the run left behind.
+- It runs as a step, named `ratchet.cleanup`: stored, retried up to 3 attempts, and resumed by
+  `tick` if the process dies in the middle (only the cleanup runs again, not the workflow). A
+  cleanup that fails for good is noted in the run's error, and the run still ends.
+- `ratchet cancel <run>` (or `engine.cancel(run_id, reason)`) asks a run to stop. A run that
+  waits ends at the next `tick`. A run in flight stops before its next step, and its agents
+  within one heartbeat (`heartbeat_s`, 60 s by default): the adapters kill the agent's process
+  group. A plain step that is running finishes first. Then the cleanup runs and the run is
+  `cancelled`.
+- `ratchet start --timeout 4h` (or `timeout_s=`) gives the run a deadline, counted from when it
+  was created, waits included: a run waiting for a person who never answers ends too. Past it,
+  the run is cancelled the same way, with `timed out` as its reason.
+- A cancelled run stays cancelled: `retry` only reopens failed runs. A failed run that is
+  retried keeps its cleanup's record; if it fails again, a second cleanup runs.
 
 `ratchet inbox` lists the runs waiting for a person: the whole question, its `details` (whatever
 JSON the step passed so you can decide without digging), its open `questions`, numbered and

@@ -100,7 +100,7 @@ A lease alone is not enough. A worker that freezes for longer than the TTL (a su
 a stopped container) wakes up believing it still owns the run. That is why **every step write
 is fenced**: the `UPDATE` only applies while `runs.owner` is still this worker. The first write
 that finds another owner raises internally, and the old worker stops executing that run.
-Finishing the run, as completed, waiting or failed, is fenced the same way.
+Finishing the run, as completed, waiting, failed or cancelled, is fenced the same way.
 
 Two writes are deliberately not fenced: **a step's cost and its busy time**. They describe what
 already happened. Money a stale worker spent was spent, and it counts towards the budget.
@@ -183,6 +183,35 @@ On resume, the finished branches return their stored outputs, and only the other
 Signals reach only the main thread. On SIGTERM or Ctrl-C, the engine marks the run as cancelled
 and gives the branches up to 60 s to stop. The Claude adapter checks that mark, and kills its
 agent's whole process group.
+
+## Ending without completing: cancel, deadline, cleanup
+
+A run has to stop when someone asks (`ratchet cancel`, which stores a `cancel_reason`) or when
+its `deadline` passes (`timeout_s`). Both are checked in three places:
+
+- **Before the run executes.** `tick` treats a waiting run that has to stop as due, so a run
+  parked for a person or an event ends without waiting for them.
+- **Before each step**, when the step is entered. A plain step already running finishes first,
+  and its output is stored.
+- **At every heartbeat**, which sets `ctx.cancelled()`. The agent adapters poll it, kill the
+  agent's process group and stop the step. A cancel therefore reaches a running agent within
+  `heartbeat_s`.
+
+A run that fails, or has to stop, then **ends**:
+
+1. The ending (final status, reason, and the number of its cleanup step) is written to the run,
+   fenced by the lease like any step write.
+2. The workflow's `cleanup` runs as a step. Cleanup steps take negative numbers (-1, -2...), so
+   they never collide with the workflow's own steps: a failed run that is retried replays its
+   steps 1..N and goes on, as before.
+3. The run gets its final status, and the ending is cleared.
+
+If the process dies between 1 and 3, the next `tick` finds the ending and goes straight to the
+cleanup. The workflow does not run again. A cleanup can wait (`Pause`, `NeedsHuman`); the run
+stays waiting, still ending, until it is resumed. Like any step, a cleanup can run more than
+once, so it must be safe to repeat.
+
+Cancelling is the only way to `cancelled`, and it is final: `retry` reopens failed runs only.
 
 ## Why SQLite
 

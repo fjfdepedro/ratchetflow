@@ -277,3 +277,48 @@ def test_systemd_needs_an_app_that_loads(tmp_path, monkeypatch):
         main(["systemd"])
     with pytest.raises(FileNotFoundError):
         main(["--app", "missing.py:engine", "systemd"])
+
+
+def test_cancel_from_the_cli_and_the_next_tick_ends_the_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    marker = tmp_path / "cleaned"
+    app = write_app(tmp_path, f"""
+        def cleanup(end):
+            open({str(marker)!r}, "w").write(end.status + ": " + end.reason)
+
+        @engine.workflow("w", cleanup=cleanup)
+        def w(ctx):
+            ctx.wait_for_event("ok", "ok")
+    """)
+    main(["--app", app, "start", "w", "--id", "r", "--timeout", "2d"])
+    capsys.readouterr()
+    main(["--app", app, "show", "r"])
+    assert "deadline:" in capsys.readouterr().out
+    db = str(tmp_path / "flows.db")
+    assert main(["--db", db, "cancel", "r", "--reason", "wrong topic"]) == 0
+    main(["--db", db, "show", "r"])
+    assert "cancel requested: wrong topic" in capsys.readouterr().out
+    main(["--app", app, "tick"])
+    assert marker.read_text() == "cancelled: wrong topic"
+    assert Store(db).get_run("r").status == "cancelled"
+    capsys.readouterr()
+    assert main(["--db", db, "cancel", "r"]) == 1
+    assert "already finished" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main(["--db", db, "cancel", "nope"])
+
+
+@pytest.mark.parametrize("span,seconds", [("90", 90), ("90s", 90), ("30m", 1800),
+                                          ("4h", 14400), ("1.5d", 129600)])
+def test_timeout_spans(span, seconds):
+    from ratchetflow.cli import _seconds
+    assert _seconds(span) == seconds
+
+
+@pytest.mark.parametrize("span", ["", "soon", "-5m", "0"])
+def test_bad_timeout_spans(span):
+    import argparse
+
+    from ratchetflow.cli import _seconds
+    with pytest.raises(argparse.ArgumentTypeError):
+        _seconds(span)
