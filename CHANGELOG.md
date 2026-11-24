@@ -17,6 +17,12 @@ All notable changes to this project are documented here. The format follows
   `Ending` (what the finished steps returned and what the others left in scratch), so it can
   tear down sandboxes or branches. It is a durable step: retried, and resumed after a crash
   without running the workflow again.
+- `ctx.invoke(name, workflow, input)`: runs another workflow as a child run, with the id
+  `<parent>.<name>`, and returns its output. The parent waits without holding a worker; a
+  child that fails or is cancelled raises `StepFailed`. Cancelling the parent cancels its
+  children. `ratchet show` lists a run's parent and children.
+- `tick` picks up runs that become due during the tick, such as a parent whose child just
+  ended. Each run still executes at most once per tick.
 - `ratchet report <run>`: the run as one self-contained HTML page, with the flow of steps
   (parallel branches side by side), a timeline of work and waits that folds long quiet
   stretches, cost per step against the budget, and what the run is waiting for.

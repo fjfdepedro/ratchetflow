@@ -37,6 +37,7 @@ from .errors import (
 from .store import FINAL, RunRow, StepRow, Store
 
 BUDGET_EVENT = "ratchet.budget"
+CHILD_EVENT = "ratchet.child:"   # + the child's run id: sent to the parent when a child ends
 
 
 @dataclass
@@ -330,6 +331,54 @@ class Context:
         raise _SuspendWith(_Suspension(wake_at=deadline, event=event,
                                        reason=f"waiting for {event}"))
 
+    def invoke(self, name: str, workflow: str, input: Any = None, *,
+               budget_usd: float | None = None, timeout_s: float | None = None) -> Any:
+        """Runs another registered workflow as a child run and returns its output.
+
+        The child is an ordinary run with its own steps, retries, waits and inbox questions,
+        and the id `<this run>.<name>`, so a replay finds the same child instead of starting
+        another. This run waits until the child ends; `tick` runs the child and then resumes
+        this one, in the same tick when it can. A child that fails or is cancelled makes this
+        step raise `StepFailed`. Cancelling this run cancels its unfinished children.
+
+        `budget_usd` caps the child; by default it gets what is left of this run's budget when
+        it starts (no cap if this run has none). The child's spending is its own: it does not
+        count towards this run's budget.
+        """
+        seq, row = self._enter(name)
+        if row is not None and row.status == "done":
+            return row.output
+        if row is not None and row.status == "failed":
+            raise StepFailed(f"{name}: {row.error}")
+        child_id = f"{self.run_id}.{name}"
+        if self._store.get_run(child_id) is None:
+            self._check_budget(seq)
+        row = self._start(seq, name)
+        if self._store.get_run(child_id) is None:
+            wf = self._engine._wf(workflow)
+            data = _jsonable(input, f"input of child run {child_id!r}")
+            budget = budget_usd if budget_usd is not None else self.budget_left()
+            now = self._engine.now()
+            self._store.insert_run(child_id, wf.name, data, wf.code_hash, budget, now,
+                                   deadline=now + timeout_s if timeout_s is not None else None,
+                                   parent_id=self.run_id)
+        if row.scratch.get("child") != child_id:
+            self._write(seq, scratch={**row.scratch, "child": child_id})
+        child = self._store.get_run(child_id)
+        assert child is not None
+        event = CHILD_EVENT + child_id
+        if child.status == "completed":
+            self._store.consume_event(self.run_id, event, seq)
+            self._write(seq, status="done", output=child.output, finished_at=self._engine.now())
+            return child.output
+        if child.status in FINAL:
+            self._store.consume_event(self.run_id, event, seq)
+            why = (child.error or child.status).splitlines()[0]
+            self._fail_step(seq, row.attempts, f"child run {child_id} {child.status}: {why}")
+            raise StepFailed(f"{name}: child run {child_id} {child.status}: {why}")
+        self._write(seq, status="waiting")
+        raise _SuspendWith(_Suspension(event=event, reason=f"waiting for child run {child_id}"))
+
     def record_cost(self, usd: float) -> None:
         """Adds cost to the current step. Counts towards the run's budget."""
         if self._current is None:
@@ -555,7 +604,9 @@ class Engine:
             except Fatal as e:
                 self._end(run, "failed", _short(e))
             else:
-                self.store.finish_run(run_id, self.owner, "completed", self.now(), output=output)
+                if self.store.finish_run(run_id, self.owner, "completed", self.now(),
+                                         output=output):
+                    self._tell_parent(run, "completed")
                 self.log(f"[{run_id}] completed")
 
     def _end(self, run: RunRow, status: str, reason: str) -> None:
@@ -564,6 +615,8 @@ class Engine:
         The ending is stored first, so a crash during the cleanup resumes the cleanup (and only
         that) at the next `tick`.
         """
+        # Children stop while this run cleans up; their own cleanups run when `tick` gets to them.
+        self.store.cancel_children(run.id, f"parent run {run.id} {status}", self.now())
         ending = run.ending
         if ending is None:
             ending = {"status": status, "reason": reason,
@@ -597,19 +650,34 @@ class Engine:
                 note = f"\ncleanup failed: {e}"
         if status == "cancelled":
             self.store.cancel_open_steps(run.id, self.owner)
-        self.store.finish_run(run.id, self.owner, status, self.now(), error=reason + note)
+        if self.store.finish_run(run.id, self.owner, status, self.now(), error=reason + note):
+            self._tell_parent(run, status)
         first = reason.splitlines()[0] if reason else status
         self.log(f"[{run.id}] {status}: {first}" + (" (cleanup failed)" if note else ""))
 
+    def _tell_parent(self, run: RunRow, status: str) -> None:
+        if run.parent_id is not None:
+            self.store.add_event(run.parent_id, CHILD_EVENT + run.id, {"status": status},
+                                 self.now())
+
     def tick(self) -> list[str]:
-        """Resumes everything that is due: expired waits, arrived events and dead workers."""
-        done = []
-        for run_id in self.store.runnable_ids(self.now()):
-            run = self.store.get_run(run_id)
-            if run and run.workflow in self.workflows:
-                self.run(run_id)
-                done.append(run_id)
-        return done
+        """Resumes everything that is due: expired waits, arrived events and dead workers.
+
+        Runs that become due during the tick (a child run just started, a parent whose child
+        just ended) are picked up in the same tick. Each run executes at most once per tick.
+        """
+        done: list[str] = []
+        seen: set[str] = set()
+        while True:
+            due = [r for r in self.store.runnable_ids(self.now()) if r not in seen]
+            if not due:
+                return done
+            for run_id in due:
+                seen.add(run_id)
+                run = self.store.get_run(run_id)
+                if run and run.workflow in self.workflows:
+                    self.run(run_id)
+                    done.append(run_id)
 
     def signal(self, run_id: str, event: str, payload: Any = None) -> None:
         if self.store.get_run(run_id) is None:
