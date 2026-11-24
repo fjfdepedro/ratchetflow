@@ -34,7 +34,7 @@ from .errors import (
     StepFailed,
     _Suspend,
 )
-from .store import RunRow, StepRow, Store
+from .store import FINAL, RunRow, StepRow, Store
 
 BUDGET_EVENT = "ratchet.budget"
 
@@ -57,6 +57,32 @@ def _lost_lease() -> _SuspendWith:
     return _SuspendWith(_Suspension(lost_lease=True, reason="lease lost"))
 
 
+class _Stop(_Suspend):
+    """Internal: the run was cancelled or passed its deadline; stop between steps."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class Ending:
+    """What a workflow's `cleanup` gets when a run ends without completing.
+
+    `status` is `failed` or `cancelled` (by hand or by its deadline), and `reason` says why.
+    `outputs` holds the output of every finished step, and `scratch` the scratch of every step
+    that saved some (an agent's session, the id of a sandbox a step was creating when the run
+    stopped), both by step name: enough to find what the run left behind.
+    """
+    run_id: str
+    workflow: str
+    input: Any
+    status: str
+    reason: str
+    outputs: dict[str, Any]
+    scratch: dict[str, dict]
+
+
 @dataclass
 class Call:
     """One branch of `ctx.parallel`, made with `ctx.call(...)`."""
@@ -73,6 +99,7 @@ class Call:
 class Workflow:
     name: str
     fn: Callable[..., Any]
+    cleanup: Callable[[Ending], Any] | None = None
     code_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -98,10 +125,11 @@ class Context:
         self._cancel = threading.Event()
 
     def cancelled(self) -> bool:
-        """True once the run is being stopped (SIGTERM, Ctrl-C) while `ctx.parallel` runs.
+        """True once the run is being stopped, so a long step can stop too.
 
-        Signals only reach the main thread; a long step in a branch checks this to stop too.
-        The Claude adapter does: the agent's process group dies with the run.
+        It turns true when `ratchet cancel` or the run's deadline is noticed by the heartbeat
+        while a step runs, and on SIGTERM or Ctrl-C while `ctx.parallel` runs (signals only
+        reach the main thread). The agent adapters check it: the agent's process group dies.
         """
         return self._cancel.is_set()
 
@@ -351,6 +379,9 @@ class Context:
         if self._current is not None:
             raise RuntimeError(f"steps do not nest: {name!r} inside {self._current.name!r}")
         self._names.add(name)
+        reason = self._store.stop_reason(self.run_id, self._engine.now())
+        if reason is not None:
+            raise _Stop(reason)
         self._seq += 1
         row = self._store.get_step(self.run_id, self._seq)
         if row is not None and row.name != name:
@@ -416,9 +447,18 @@ class Engine:
 
     # --- registration -----------------------------------------------------
 
-    def workflow(self, name: str | None = None) -> Callable[[Callable], Callable]:
+    def workflow(self, name: str | None = None, *,
+                 cleanup: Callable[[Ending], Any] | None = None) -> Callable[[Callable], Callable]:
+        """Registers a workflow.
+
+        `cleanup(ending)` runs when a run ends without completing: it failed, was cancelled, or
+        passed its deadline. It gets an `Ending` (what the finished steps returned and what the
+        others left in scratch), so it can tear down whatever the run left behind. It runs as a
+        step: stored, retried up to 3 attempts, resumed by `tick` if the process dies. A cleanup
+        that fails for good is noted in the run's error; the run still ends.
+        """
         def deco(fn: Callable) -> Callable:
-            wf = Workflow(name or fn.__name__, fn)
+            wf = Workflow(name or fn.__name__, fn, cleanup)
             self.workflows[wf.name] = wf
             return fn
         return deco
@@ -426,13 +466,21 @@ class Engine:
     # --- lifecycle --------------------------------------------------------
 
     def start(self, workflow: str, input: Any = None, *, run_id: str | None = None,
-              budget_usd: float | None = None, execute: bool = True) -> str:
+              budget_usd: float | None = None, timeout_s: float | None = None,
+              execute: bool = True) -> str:
         """Creates a run and executes it. With `run_id` it is idempotent: an existing run is
-        neither duplicated nor woken up early."""
+        neither duplicated nor woken up early.
+
+        With `timeout_s`, the run is cancelled once that much time has passed since it was
+        created, waits included: a run waiting for a person who never answers ends too.
+        """
         wf = self._wf(workflow)
         run_id = run_id or uuid.uuid4().hex[:12]
         if self.store.get_run(run_id) is None:
-            self.store.insert_run(run_id, wf.name, input, wf.code_hash, budget_usd, self.now())
+            now = self.now()
+            deadline = now + timeout_s if timeout_s is not None else None
+            self.store.insert_run(run_id, wf.name, input, wf.code_hash, budget_usd, now,
+                                  deadline=deadline)
         if execute:
             self.run(run_id)
         return run_id
@@ -442,7 +490,7 @@ class Engine:
         run = self.store.get_run(run_id)
         if run is None:
             raise KeyError(run_id)
-        if run.status in ("completed", "failed"):
+        if run.status in FINAL:
             return run
         if run.status == "waiting" and not self.store.is_runnable(run_id, self.now()):
             return run  # its time has not come and its event has not arrived
@@ -456,11 +504,34 @@ class Engine:
             self.log(f"[{run_id}] warning: the code of {wf.name!r} changed since the run started"
                      f" ({run.code_hash} -> {wf.code_hash})")
         self._lease_lost.clear()
+        ctx = Context(self, run)
         stop = threading.Event()
-        hb = threading.Thread(target=self._heartbeat, args=(run_id, stop), daemon=True)
+        hb = threading.Thread(target=self._heartbeat, args=(run_id, stop, ctx), daemon=True)
         hb.start()
         try:
-            out = wf.fn(Context(self, run), *_args(run.input))
+            if run.ending is not None:
+                # The process died (or waited) while the run was ending: finish the cleanup.
+                self._end(run, run.ending["status"], run.ending["reason"])
+            elif (reason := self.store.stop_reason(run_id, self.now())) is not None:
+                self._end(run, "cancelled", reason)
+            else:
+                self._execute(run, wf, ctx)
+        except KeyboardInterrupt:
+            # Stopped by hand (or SIGTERM through the CLI): release the lease so the run can be
+            # resumed right away instead of waiting for the TTL.
+            self.store.release_lease(run_id, self.owner)
+            raise
+        finally:
+            stop.set()
+            hb.join(timeout=1)
+        return self.store.get_run(run_id)  # type: ignore[return-value]
+
+    def _execute(self, run: RunRow, wf: Workflow, ctx: Context) -> None:
+        run_id = run.id
+        try:
+            out = wf.fn(ctx, *_args(run.input))
+        except _Stop as s:
+            self._end(run, "cancelled", s.reason)
         except _SuspendWith as s:
             sus = s.suspension
             if sus.lost_lease:
@@ -470,26 +541,65 @@ class Engine:
                                       wake_at=sus.wake_at, wait_event=sus.event, error=sus.reason)
                 self.log(f"[{run_id}] waiting: {sus.reason}")
         except KeyboardInterrupt:
-            # Stopped by hand (or SIGTERM through the CLI): release the lease so the run can be
-            # resumed right away instead of waiting for the TTL.
-            self.store.release_lease(run_id, self.owner)
-            raise
+            # An agent adapter stops its step this way once `ctx.cancelled()` turns true. If the
+            # heartbeat set it because the run must stop, end the run; a real Ctrl-C goes on up.
+            reason = self.store.stop_reason(run_id, self.now()) if ctx.cancelled() else None
+            if reason is None:
+                raise
+            self._end(run, "cancelled", reason)
         except Exception as e:  # noqa: BLE001
-            self.store.finish_run(run_id, self.owner, "failed", self.now(),
-                                  error=f"{_short(e)}\n{traceback.format_exc(limit=5)}")
-            self.log(f"[{run_id}] failed: {_short(e)}")
+            self._end(run, "failed", f"{_short(e)}\n{traceback.format_exc(limit=5)}")
         else:
             try:
                 output = _jsonable(out, "<workflow result>")
             except Fatal as e:
-                self.store.finish_run(run_id, self.owner, "failed", self.now(), error=_short(e))
+                self._end(run, "failed", _short(e))
             else:
                 self.store.finish_run(run_id, self.owner, "completed", self.now(), output=output)
                 self.log(f"[{run_id}] completed")
-        finally:
-            stop.set()
-            hb.join(timeout=1)
-        return self.store.get_run(run_id)  # type: ignore[return-value]
+
+    def _end(self, run: RunRow, status: str, reason: str) -> None:
+        """Ends a run that did not complete: runs the workflow's cleanup, then the final status.
+
+        The ending is stored first, so a crash during the cleanup resumes the cleanup (and only
+        that) at the next `tick`.
+        """
+        ending = run.ending
+        if ending is None:
+            ending = {"status": status, "reason": reason,
+                      "seq": self.store.next_cleanup_seq(run.id)}
+            if not self.store.set_ending(run.id, self.owner, ending):
+                self.log(f"[{run.id}] lost the lease: another process took the run over")
+                return
+        wf = self.workflows.get(run.workflow)
+        note = ""
+        if wf is not None and wf.cleanup is not None:
+            seq = ending["seq"]
+            name = "ratchet.cleanup" if seq == -1 else f"ratchet.cleanup{seq}"
+            steps = self.store.list_steps(run.id)
+            info = Ending(run.id, run.workflow, run.input, status, reason,
+                          outputs={s.name: s.output for s in steps
+                                   if s.status == "done" and s.seq > 0},
+                          scratch={s.name: s.scratch for s in steps if s.scratch and s.seq > 0})
+            try:
+                Context(self, run)._run_step(seq, name, wf.cleanup, (info,), {}, 3, 2.0, 300.0)
+            except _SuspendWith as s:
+                sus = s.suspension
+                if sus.lost_lease:
+                    self.log(f"[{run.id}] lost the lease: another process took the run over")
+                else:   # a cleanup that pauses or asks a person: the run waits, still ending
+                    self.store.finish_run(run.id, self.owner, "waiting", self.now(),
+                                          wake_at=sus.wake_at, wait_event=sus.event,
+                                          error=sus.reason)
+                    self.log(f"[{run.id}] cleanup waiting: {sus.reason}")
+                return
+            except StepFailed as e:
+                note = f"\ncleanup failed: {e}"
+        if status == "cancelled":
+            self.store.cancel_open_steps(run.id, self.owner)
+        self.store.finish_run(run.id, self.owner, status, self.now(), error=reason + note)
+        first = reason.splitlines()[0] if reason else status
+        self.log(f"[{run.id}] {status}: {first}" + (" (cleanup failed)" if note else ""))
 
     def tick(self) -> list[str]:
         """Resumes everything that is due: expired waits, arrived events and dead workers."""
@@ -510,6 +620,17 @@ class Engine:
         """Reopens a `failed` run: its failed steps get all their attempts back."""
         self.store.reopen_failed(run_id)
 
+    def cancel(self, run_id: str, reason: str = "cancelled") -> bool:
+        """Asks a run to stop; False if it has already finished.
+
+        A run nobody holds ends at the next `tick`. A run in flight stops between steps, and its
+        agents within a heartbeat (`heartbeat_s`). Either way its `cleanup` runs, then the run
+        is `cancelled`.
+        """
+        if self.store.get_run(run_id) is None:
+            raise KeyError(run_id)
+        return self.store.request_cancel(run_id, reason, self.now())
+
     # --- internals --------------------------------------------------------
 
     def _wf(self, name: str) -> Workflow:
@@ -518,8 +639,13 @@ class Engine:
         except KeyError:
             raise KeyError(f"workflow not registered: {name!r}") from None
 
-    def _heartbeat(self, run_id: str, stop: threading.Event) -> None:
+    def _heartbeat(self, run_id: str, stop: threading.Event, ctx: Context) -> None:
         while not stop.wait(self.heartbeat_s):
+            try:
+                if self.store.stop_reason(run_id, self.now()) is not None:
+                    ctx._cancel.set()   # the adapters kill their agent; the run ends after
+            except sqlite3.Error:
+                pass
             try:
                 renewed = self.store.renew_lease(run_id, self.owner, self.now(), self.lease_ttl_s)
             except sqlite3.Error as e:

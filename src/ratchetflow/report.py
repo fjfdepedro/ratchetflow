@@ -251,6 +251,8 @@ def _notice(run: RunRow, store: Store) -> str:
     if run.status == "failed" and run.error:
         return (f'<div class="notice bad"><b>Failed.</b> {_e(run.error.splitlines()[0])}<br>'
                 f"<code>ratchet retry {_e(run.id)}</code></div>")
+    if run.status == "cancelled" and run.error:
+        return (f'<div class="notice"><b>Cancelled.</b> {_e(run.error.splitlines()[0])}</div>')
     if run.status != "waiting":
         return ""
     for item in store.inbox("ratchet.budget"):
@@ -343,7 +345,7 @@ margin-top:18px}
 .stat .k{color:var(--ink3);font-size:12px}.stat .v{font-size:18px;font-weight:600}
 .pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;
 background:var(--sunk);color:var(--ink2)}
-.pill.st-completed,.pill.st-done{color:var(--ok)}.pill.st-failed{color:var(--bad)}
+.pill.st-completed,.pill.st-done{color:var(--ok)}.pill.st-failed{color:var(--bad)}.pill.st-cancelled{color:var(--ink3)}.node.st-cancelled{opacity:.6}
 .pill.st-waiting,.pill.st-running,.pill.st-pending{color:var(--warn)}
 .notice{margin-top:18px;padding:12px 14px;border-radius:10px;background:var(--sunk);
 border-left:4px solid var(--ink3)}

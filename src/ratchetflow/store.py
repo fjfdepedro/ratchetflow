@@ -12,6 +12,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS runs (
     workflow     TEXT NOT NULL,
     input_json   TEXT NOT NULL,
     status       TEXT NOT NULL,          -- pending | running | waiting | completed | failed
+                                         -- | cancelled
     wake_at      REAL,                   -- waiting for a time
     wait_event   TEXT,                   -- waiting for an event
     owner        TEXT,
@@ -30,13 +32,17 @@ CREATE TABLE IF NOT EXISTS runs (
     output_json  TEXT,
     error        TEXT,
     created_at   REAL NOT NULL,
-    updated_at   REAL NOT NULL
+    updated_at   REAL NOT NULL,
+    cancel_reason TEXT,                  -- `ratchet cancel`: end at the next chance
+    deadline     REAL,                   -- cancelled once this passes (`timeout_s`)
+    ending_json  TEXT                    -- while ending: final status, reason, cleanup
+                                         -- step (a crash resumes the cleanup only)
 );
 CREATE TABLE IF NOT EXISTS steps (
     run_id       TEXT NOT NULL REFERENCES runs(id),
     seq          INTEGER NOT NULL,
     name         TEXT NOT NULL,
-    status       TEXT NOT NULL,          -- running | waiting | done | failed
+    status       TEXT NOT NULL,          -- running | waiting | done | failed | cancelled
     attempts     INTEGER NOT NULL DEFAULT 0,
     output_json  TEXT,
     error        TEXT,
@@ -61,13 +67,18 @@ CREATE INDEX IF NOT EXISTS events_pending ON events(run_id, name, consumed_seq);
 """
 
 # A run is due when its wait time has come, its event has arrived or its worker died.
+# A run nobody holds is also due once it has to stop: cancelled by hand or past its deadline.
 _RUNNABLE = (
     "((r.status = 'waiting' AND r.wake_at IS NOT NULL AND r.wake_at <= :now)"
     " OR (r.status = 'waiting' AND r.wait_event IS NOT NULL AND EXISTS ("
     "     SELECT 1 FROM events e WHERE e.run_id = r.id AND e.name = r.wait_event"
     "     AND e.consumed_seq IS NULL))"
-    " OR (r.status IN ('pending', 'running') AND (r.lease_until IS NULL OR r.lease_until < :now)))"
+    " OR (r.status IN ('pending', 'running') AND (r.lease_until IS NULL OR r.lease_until < :now))"
+    " OR (r.status = 'waiting' AND (r.cancel_reason IS NOT NULL"
+    "     OR (r.deadline IS NOT NULL AND r.deadline <= :now))))"
 )
+
+FINAL = ("completed", "failed", "cancelled")
 
 # Step writes only land while the writer still holds the run's lease.
 _OWNS = "EXISTS (SELECT 1 FROM runs WHERE id = :run_id AND owner = :owner)"
@@ -89,6 +100,9 @@ class RunRow:
     error: str | None
     created_at: float
     updated_at: float
+    cancel_reason: str | None = None
+    deadline: float | None = None
+    ending: dict | None = None
 
 
 @dataclass
@@ -111,6 +125,10 @@ def _loads(s: str | None) -> Any:
     return None if s is None else json.loads(s)
 
 
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
 class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
@@ -125,13 +143,19 @@ class Store:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Columns added after 0.1.0. Old rows keep NULL: their working time is unknown."""
-        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(steps)")}
-        if "busy_s" not in cols:
-            try:
-                self._db.execute("ALTER TABLE steps ADD COLUMN busy_s REAL")
-            except sqlite3.OperationalError:   # another process added it first
-                pass
+        """Columns added after 0.1.0. Old rows keep NULL: their working time is unknown, and
+        they have no deadline, no cancel request and no ending."""
+        added = {"steps": [("busy_s", "REAL")],
+                 "runs": [("cancel_reason", "TEXT"), ("deadline", "REAL"),
+                          ("ending_json", "TEXT")]}
+        for table, columns in added.items():
+            have = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            for col, kind in columns:
+                if col not in have:
+                    try:
+                        self._db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+                    except sqlite3.OperationalError:   # another process added it first
+                        pass
 
     def close(self) -> None:
         self._db.close()
@@ -159,11 +183,12 @@ class Store:
     # --- runs -------------------------------------------------------------
 
     def insert_run(self, run_id: str, workflow: str, input_: Any, code_hash: str,
-                   budget_usd: float | None, now: float) -> None:
+                   budget_usd: float | None, now: float, *,
+                   deadline: float | None = None) -> None:
         self.x(
             "INSERT INTO runs (id, workflow, input_json, status, code_hash, budget_usd,"
-            " created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
-            (run_id, workflow, json.dumps(input_), code_hash, budget_usd, now, now),
+            " created_at, updated_at, deadline) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (run_id, workflow, json.dumps(input_), code_hash, budget_usd, now, now, deadline),
         )
 
     def get_run(self, run_id: str) -> RunRow | None:
@@ -199,23 +224,67 @@ class Store:
 
     def finish_run(self, run_id: str, owner: str, status: str, now: float, *,
                    output: Any = None, error: str | None = None,
-                   wake_at: float | None = None, wait_event: str | None = None) -> None:
-        self.x(
+                   wake_at: float | None = None, wait_event: str | None = None) -> bool:
+        """Fenced by `owner`. A final status clears the ending; a wait keeps it."""
+        ending = "NULL" if status in FINAL else "ending_json"
+        return self.x(
             "UPDATE runs SET status = ?, output_json = ?, error = ?, wake_at = ?, wait_event = ?,"
-            " owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND owner = ?",
+            f" ending_json = {ending}, owner = NULL, lease_until = NULL, updated_at = ?"
+            " WHERE id = ? AND owner = ?",
             (status, None if output is None else json.dumps(output), error, wake_at, wait_event,
              now, run_id, owner),
-        )
+        ) == 1
+
+    def request_cancel(self, run_id: str, reason: str, now: float) -> bool:
+        """Asks an unfinished run to stop. The engine ends it at its next chance: at once if
+        nobody holds it (the next `tick`), between steps or at the next heartbeat otherwise.
+        Returns False if the run does not exist or has already finished."""
+        return self.x("UPDATE runs SET cancel_reason = COALESCE(cancel_reason, ?), updated_at = ?"
+                      " WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
+                      (reason, now, run_id)) == 1
+
+    def stop_reason(self, run_id: str, now: float) -> str | None:
+        """Why the run has to stop now (a cancel request or its deadline), or None."""
+        rows = self.q("SELECT cancel_reason, deadline FROM runs WHERE id = ?", (run_id,))
+        if not rows:
+            return None
+        if rows[0]["cancel_reason"]:
+            return str(rows[0]["cancel_reason"])
+        deadline = rows[0]["deadline"]
+        if deadline is not None and deadline <= now:
+            return f"timed out: the run passed its deadline ({_iso(deadline)})"
+        return None
+
+    def set_ending(self, run_id: str, owner: str, ending: dict) -> bool:
+        """Records how the run ends before its cleanup runs. Fenced by `owner`."""
+        return self.x("UPDATE runs SET ending_json = ? WHERE id = ? AND owner = ?",
+                      (json.dumps(ending), run_id, owner)) == 1
+
+    def cancel_open_steps(self, run_id: str, owner: str) -> None:
+        """The workflow's steps left running or waiting in a run that was cancelled."""
+        self.x(f"UPDATE steps SET status = 'cancelled' WHERE run_id = :run_id AND seq > 0"
+               f" AND status IN ('running', 'waiting') AND {_OWNS}",
+               {"run_id": run_id, "owner": owner})
+
+    def next_cleanup_seq(self, run_id: str) -> int:
+        """Cleanup steps take negative numbers (-1, -2...), out of the workflow's way: a run
+        reopened with `retry` goes on with its own step numbers, and may end (and clean up)
+        again."""
+        low = self.q("SELECT MIN(seq) AS s FROM steps WHERE run_id = ?", (run_id,))[0]["s"]
+        return min(low or 0, 0) - 1
 
     def reopen_failed(self, run_id: str) -> bool:
-        """A `failed` run goes back to `pending`; its failed steps get all their attempts back."""
+        """A `failed` run goes back to `pending`; its failed steps get all their attempts back.
+
+        Its cleanup steps keep their record and are not run again by the replay: they are not
+        part of the workflow."""
         with self.tx() as db:
             n = db.execute("UPDATE runs SET status = 'pending', error = NULL, owner = NULL,"
                            " lease_until = NULL WHERE id = ? AND status = 'failed'",
                            (run_id,)).rowcount
             if n:
                 db.execute("UPDATE steps SET status = 'running', attempts = 0, error = NULL"
-                           " WHERE run_id = ? AND status = 'failed'", (run_id,))
+                           " WHERE run_id = ? AND status = 'failed' AND seq > 0", (run_id,))
         return n == 1
 
     def runnable_ids(self, now: float) -> list[str]:
@@ -260,8 +329,10 @@ class Store:
         return self._step(rows[0]) if rows else None
 
     def list_steps(self, run_id: str) -> list[StepRow]:
+        """The workflow's steps in order, then the cleanup steps in the order they ran."""
         return [self._step(r) for r in
-                self.q("SELECT * FROM steps WHERE run_id = ? ORDER BY seq", (run_id,))]
+                self.q("SELECT * FROM steps WHERE run_id = ? ORDER BY seq < 0, ABS(seq)",
+                       (run_id,))]
 
     def start_step(self, run_id: str, seq: int, name: str, now: float,
                    owner: str | None = None) -> StepRow | None:
@@ -349,7 +420,7 @@ class Store:
         return RunRow(r["id"], r["workflow"], _loads(r["input_json"]), r["status"], r["wake_at"],
                       r["wait_event"], r["owner"], r["lease_until"], r["code_hash"],
                       r["budget_usd"], _loads(r["output_json"]), r["error"], r["created_at"],
-                      r["updated_at"])
+                      r["updated_at"], r["cancel_reason"], r["deadline"], _loads(r["ending_json"]))
 
     @staticmethod
     def _step(r: sqlite3.Row) -> StepRow:
