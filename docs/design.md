@@ -213,6 +213,24 @@ once, so it must be safe to repeat.
 
 Cancelling is the only way to `cancelled`, and it is final: `retry` reopens failed runs only.
 
+## Child runs
+
+`ctx.invoke(name, workflow, input)` inserts a run with the id `<parent>.<name>` and a
+`parent_id`. The insert is idempotent by id, so a parent that crashes after it and replays finds
+the same child. The parent's step stores the child's id in scratch, and the parent waits for the
+event `ratchet.child:<child id>`.
+
+When a child reaches a final status, the engine sends that event to its parent in the same
+process, right after the child's final write. If the child finished before the parent started
+waiting, the event is already there and the parent is due at once. On resume, the parent's step
+reads the child's status, not the event's payload: the child's row is the source of truth.
+
+`tick` keeps going while new runs become due, so a child and then its parent can both finish in
+one tick. Each run executes at most once per tick, which keeps a tick finite.
+
+Cancelling a run cancels its unfinished children, recursively. So does a run that ends any other
+way without completing, before its own cleanup runs.
+
 ## Why SQLite
 
 - **No server to run, back up or upgrade.** The state of every run is one file.

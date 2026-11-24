@@ -35,8 +35,9 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at   REAL NOT NULL,
     cancel_reason TEXT,                  -- `ratchet cancel`: end at the next chance
     deadline     REAL,                   -- cancelled once this passes (`timeout_s`)
-    ending_json  TEXT                    -- while ending: final status, reason, cleanup
+    ending_json  TEXT,                   -- while ending: final status, reason, cleanup
                                          -- step (a crash resumes the cleanup only)
+    parent_id    TEXT                    -- the run that started this one with ctx.invoke
 );
 CREATE TABLE IF NOT EXISTS steps (
     run_id       TEXT NOT NULL REFERENCES runs(id),
@@ -103,6 +104,7 @@ class RunRow:
     cancel_reason: str | None = None
     deadline: float | None = None
     ending: dict | None = None
+    parent_id: str | None = None
 
 
 @dataclass
@@ -147,7 +149,7 @@ class Store:
         they have no deadline, no cancel request and no ending."""
         added = {"steps": [("busy_s", "REAL")],
                  "runs": [("cancel_reason", "TEXT"), ("deadline", "REAL"),
-                          ("ending_json", "TEXT")]}
+                          ("ending_json", "TEXT"), ("parent_id", "TEXT")]}
         for table, columns in added.items():
             have = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
             for col, kind in columns:
@@ -184,12 +186,19 @@ class Store:
 
     def insert_run(self, run_id: str, workflow: str, input_: Any, code_hash: str,
                    budget_usd: float | None, now: float, *,
-                   deadline: float | None = None) -> None:
+                   deadline: float | None = None, parent_id: str | None = None) -> None:
         self.x(
-            "INSERT INTO runs (id, workflow, input_json, status, code_hash, budget_usd,"
-            " created_at, updated_at, deadline) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-            (run_id, workflow, json.dumps(input_), code_hash, budget_usd, now, now, deadline),
+            "INSERT OR IGNORE INTO runs (id, workflow, input_json, status, code_hash, budget_usd,"
+            " created_at, updated_at, deadline, parent_id)"
+            " VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+            (run_id, workflow, json.dumps(input_), code_hash, budget_usd, now, now, deadline,
+             parent_id),
         )
+
+    def children(self, run_id: str) -> list[RunRow]:
+        """The runs this one started with `ctx.invoke`, oldest first."""
+        return [self._run(r) for r in self.q(
+            "SELECT * FROM runs WHERE parent_id = ? ORDER BY created_at, id", (run_id,))]
 
     def get_run(self, run_id: str) -> RunRow | None:
         rows = self.q("SELECT * FROM runs WHERE id = ?", (run_id,))
@@ -238,10 +247,20 @@ class Store:
     def request_cancel(self, run_id: str, reason: str, now: float) -> bool:
         """Asks an unfinished run to stop. The engine ends it at its next chance: at once if
         nobody holds it (the next `tick`), between steps or at the next heartbeat otherwise.
-        Returns False if the run does not exist or has already finished."""
-        return self.x("UPDATE runs SET cancel_reason = COALESCE(cancel_reason, ?), updated_at = ?"
-                      " WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
-                      (reason, now, run_id)) == 1
+        Returns False if the run does not exist or has already finished.
+
+        Its unfinished child runs (`ctx.invoke`) are cancelled too, and theirs."""
+        asked = self.x("UPDATE runs SET cancel_reason = COALESCE(cancel_reason, ?),"
+                       " updated_at = ? WHERE id = ?"
+                       " AND status NOT IN ('completed', 'failed', 'cancelled')",
+                       (reason, now, run_id)) == 1
+        self.cancel_children(run_id, f"parent run {run_id} cancelled", now)
+        return asked
+
+    def cancel_children(self, run_id: str, reason: str, now: float) -> None:
+        for child in self.children(run_id):
+            if child.status not in FINAL:
+                self.request_cancel(child.id, reason, now)
 
     def stop_reason(self, run_id: str, now: float) -> str | None:
         """Why the run has to stop now (a cancel request or its deadline), or None."""
@@ -420,7 +439,8 @@ class Store:
         return RunRow(r["id"], r["workflow"], _loads(r["input_json"]), r["status"], r["wake_at"],
                       r["wait_event"], r["owner"], r["lease_until"], r["code_hash"],
                       r["budget_usd"], _loads(r["output_json"]), r["error"], r["created_at"],
-                      r["updated_at"], r["cancel_reason"], r["deadline"], _loads(r["ending_json"]))
+                      r["updated_at"], r["cancel_reason"], r["deadline"], _loads(r["ending_json"]),
+                      r["parent_id"])
 
     @staticmethod
     def _step(r: sqlite3.Row) -> StepRow:

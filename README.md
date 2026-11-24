@@ -160,6 +160,34 @@ turn each.
 
 Starting a run again with the same `--id` neither duplicates it nor wakes it before its time.
 
+### Child runs
+
+A workflow can run another one as a child and wait for its output:
+
+```python
+@engine.workflow("night")
+def night(ctx, plan):
+    results = []
+    for i, idea in enumerate(plan["ideas"]):
+        try:
+            results.append(ctx.invoke(f"experiment-{i}", "experiment", idea, timeout_s=1800))
+        except StepFailed as e:                 # the child failed or was cancelled
+            results.append({"failed": str(e)})
+    return ctx.step("summary", summarise, results)
+```
+
+- The child is an ordinary run, with the id `<parent>.<name>` (here `night-7.experiment-0`):
+  its own steps, retries, waits, inbox questions and `ratchet show`/`report`. A replay finds
+  the same child instead of starting another.
+- The parent waits without holding a worker. `tick` runs the child, then resumes the parent,
+  in the same tick when it can.
+- A child that fails or is cancelled makes `invoke` raise `StepFailed`, which the parent may
+  catch. Cancelling the parent, or the parent passing its deadline, cancels its unfinished
+  children, and each runs its own cleanup.
+- `budget_usd` caps the child. By default it gets what is left of the parent's budget when it
+  starts. Its spending is its own and does not count towards the parent's budget.
+- A parent waits for one child at a time: `ctx.invoke` does not go inside `ctx.parallel`.
+
 ### Cancelling, timeouts and cleaning up
 
 A run that will not complete should not leave things running: a sandbox, a branch, a

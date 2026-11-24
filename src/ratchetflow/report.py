@@ -66,6 +66,8 @@ def _kind(step: StepRow, run: RunRow) -> str:
         return "agent"
     if "question" in step.scratch:
         return "human"
+    if "child" in step.scratch:
+        return "event"   # waits for another run
     if "wake_at" in step.scratch:
         return "sleep"
     if step.status == "waiting" and run.wait_event:

@@ -225,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  deadline: {_fmt_t(run.deadline)}")
         if run.cancel_reason and run.status != "cancelled":
             print(f"  cancel requested: {run.cancel_reason}")
+        if run.parent_id:
+            print(f"  parent: {run.parent_id}")
+        for child in store.children(run.id):
+            print(f"  child: {child.id}  {child.workflow}  {child.status}")
         for step in store.list_steps(run.id):
             dur = _duration(step)
             print(f"  {step.seq:>3} {step.name:<28} {step.status:<8} x{step.attempts}"

@@ -298,7 +298,7 @@ def test_a_database_from_0_2_gains_the_new_run_columns(tmp_path):
     old.close()
     store = Store(path)
     run = store.get_run("r")
-    assert (run.cancel_reason, run.deadline, run.ending) == (None, None, None)
+    assert (run.cancel_reason, run.deadline, run.ending, run.parent_id) == (None,) * 4
     assert store.request_cancel("r", "bye", 1)
     assert store.runnable_ids(1) == ["r"]
     Store(path)
